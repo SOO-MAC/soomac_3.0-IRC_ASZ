@@ -1,0 +1,61 @@
+# ── 시크릿 ──
+env.sh
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*
+secrets*
+
+# ── STT: 녹음 (용량 크고 재생성 가능) ──
+rec*/
+live*/
+# eval/ 은 커밋함. 손님 음성이 들어가면 아래 주석 풀 것
+# eval/
+
+# ── STT: protoc 생성물 ──
+nest_pb2.py
+nest_pb2_grpc.py
+
+# ── 모델 / 체크포인트 ──
+outputs/
+models/
+checkpoints/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+*.onnx
+
+# ── ML 캐시 ──
+.cache/
+huggingface/
+wandb/
+
+# ── 런타임 로그 ──
+*.log
+
+# ── ROS2 빌드 산출물 (레포 최상단에서 실수로 colcon build 했을 때 대비) ──
+/build/
+/install/
+/log/
+
+# ── 파이썬 ──
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+*_venv/
+
+# ── 백업 ──
+*.bak
+*.bak_*
+*.backup
+*~
+
+# ── 에디터 / OS ──
+.vscode/
+.idea/
+.DS_Store
