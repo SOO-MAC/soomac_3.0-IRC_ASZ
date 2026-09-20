@@ -1,0 +1,16 @@
+# SOOMAC Drive-Thru V14
+# Tested environment: Ubuntu 22.04 / Python 3.x
+
+# Application / runtime
+openai==3.0.0
+pydantic==2.13.4
+
+# LLM serving
+# NOTE:
+# vLLM installation is CUDA/PyTorch dependent.
+# The development machine used:
+#   vllm 0.27.2rc1.dev89+g63a9a5010
+#   xgrammar 0.2.3
+#
+# Install a compatible vLLM build separately before running the V14 server.
+xgrammar==0.2.3

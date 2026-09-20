@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+*_venv/
+
+# Models / checkpoints
+outputs/
+models/
+checkpoints/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+
+# ML cache
+.cache/
+huggingface/
+wandb/
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+credentials*
+secrets*
+
+# Runtime-generated data
+*.log
+
+# Backups
+*.bak
+*.bak_*
+*.backup
+*~
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store

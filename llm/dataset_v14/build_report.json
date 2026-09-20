@@ -1,0 +1,29 @@
+{
+  "base": "dataset_v13",
+  "seed": 114,
+  "base_counts": {
+    "train": 9733,
+    "val": 1151,
+    "test": 1155
+  },
+  "final_counts": {
+    "train": 10072,
+    "val": 1151,
+    "test": 1155
+  },
+  "repair_total": 339,
+  "repair_counts": {
+    "v14_mobile_pickup_replay": 231,
+    "v14_multi_only_single_repair": 36,
+    "v14_sparse_modify_repair": 24,
+    "v14_reference_contrast_repair": 48
+  },
+  "blind_v14": 12,
+  "notes": [
+    "V13 reference augmentation kept intact.",
+    "339 repair rows added to TRAIN only.",
+    "VAL/TEST copied unchanged from V13.",
+    "Known blind utterances protected from exact leakage.",
+    "Positive/negative reference contrast intentionally uses same utterance with different state."
+  ]
+}
