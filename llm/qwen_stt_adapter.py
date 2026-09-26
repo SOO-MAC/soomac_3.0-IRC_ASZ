@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import audioop
+import queue
 import sys
 import threading
 from pathlib import Path
+
+import pyaudio
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -15,9 +19,160 @@ from stt.qwen_live_ver_2 import (
     SegmentConfig,
     Segmenter,
     QwenAsr,
+    SAMPLE_RATE,
+    CHANNELS,
+    FRAME_MS,
+    FRAME_BYTES,
+    AUDIO_FORMAT,
 )
 
 from stt_guard import STTResult
+
+
+class ResamplingMicStream(MicStream):
+    """
+    마이크가 16 kHz를 직접 지원하지 않아도
+    장치의 native sample rate로 캡처한 뒤
+    16 kHz PCM으로 변환해서 기존 Segmenter에 전달한다.
+    """
+
+    def start(self) -> None:
+        self._pa = pyaudio.PyAudio()
+
+        try:
+            if self._device_index is None:
+                info = self._pa.get_default_input_device_info()
+                self._device_index = int(info["index"])
+            else:
+                info = self._pa.get_device_info_by_index(
+                    self._device_index
+                )
+        except Exception as e:
+            self._pa.terminate()
+            self._pa = None
+            raise RuntimeError(
+                f"마이크 장치 정보를 읽지 못했다: {e}"
+            )
+
+        if int(info.get("maxInputChannels", 0)) < CHANNELS:
+            self._pa.terminate()
+            self._pa = None
+            raise RuntimeError(
+                f"장치 {self._device_index} "
+                f"({info['name']}) 는 입력 장치가 아니다."
+            )
+
+        self._capture_rate = int(
+            round(float(info["defaultSampleRate"]))
+        )
+
+        self._capture_frames = (
+            self._capture_rate * FRAME_MS // 1000
+        )
+
+        print(
+            f"마이크: [{self._device_index}] {info['name']}",
+            file=sys.stderr,
+        )
+
+        print(
+            f"캡처: {self._capture_rate} Hz "
+            f"-> STT/VAD: {SAMPLE_RATE} Hz",
+            file=sys.stderr,
+        )
+
+        try:
+            self._stream = self._pa.open(
+                format=AUDIO_FORMAT,
+                channels=CHANNELS,
+                rate=self._capture_rate,
+                input=True,
+                input_device_index=self._device_index,
+                frames_per_buffer=self._capture_frames,
+            )
+
+        except OSError as e:
+            self._pa.terminate()
+            self._pa = None
+            raise RuntimeError(
+                f"마이크를 못 열었다: {e}"
+            )
+
+        self._thread = threading.Thread(
+            target=self._loop,
+            name="mic-resample",
+            daemon=True,
+        )
+
+        self._thread.start()
+
+    def _loop(self) -> None:
+        acc = bytearray()
+        first = True
+        rate_state = None
+
+        while not self._stop.is_set():
+
+            try:
+                pcm = self._stream.read(
+                    self._capture_frames,
+                    exception_on_overflow=False,
+                )
+
+            except Exception as e:
+                if not self._stop.is_set():
+                    print(
+                        f"마이크 read 실패: {e}",
+                        file=sys.stderr,
+                    )
+                    self._stop.set()
+                return
+
+            if not pcm:
+                continue
+
+            if self._capture_rate != SAMPLE_RATE:
+                pcm, rate_state = audioop.ratecv(
+                    pcm,
+                    2,                  # int16 = 2 bytes
+                    CHANNELS,
+                    self._capture_rate,
+                    SAMPLE_RATE,
+                    rate_state,
+                )
+
+            if first:
+                print(
+                    f"리샘플 후 첫 chunk: "
+                    f"{len(pcm)} bytes",
+                    file=sys.stderr,
+                )
+                first = False
+
+            acc.extend(pcm)
+
+            while len(acc) >= FRAME_BYTES:
+                frame = bytes(acc[:FRAME_BYTES])
+                del acc[:FRAME_BYTES]
+
+                if not self._enabled.is_set():
+                    continue
+
+                try:
+                    self.q.put_nowait(frame)
+
+                except queue.Full:
+                    try:
+                        self.q.get_nowait()
+                    except queue.Empty:
+                        pass
+
+                    try:
+                        self.q.put_nowait(frame)
+                    except queue.Full:
+                        pass
+
+                    self.dropped += 1
 
 
 class QwenSTTAdapter:
@@ -51,7 +206,7 @@ class QwenSTTAdapter:
 
         self.asr.warmup(warmup)
 
-        self.mic = MicStream(
+        self.mic = ResamplingMicStream(
             device_index=device_index
         )
         self.mic.start()
