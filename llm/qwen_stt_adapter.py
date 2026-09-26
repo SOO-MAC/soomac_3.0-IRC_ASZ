@@ -14,11 +14,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from stt.qwen_live_ver_2 import (
+from stt.qwen_live_ver_3 import (
     MicStream,
     SegmentConfig,
     Segmenter,
     QwenAsr,
+    SpeechVerifier,
     SAMPLE_RATE,
     CHANNELS,
     FRAME_MS,
@@ -220,6 +221,13 @@ class QwenSTTAdapter:
             min_speech_ms=min_speech_ms,
         )
 
+        self.verifier = None
+        try:
+            self.verifier = SpeechVerifier(0.5, 120)
+        except Exception as e:
+            print(f"★Silero 없이 진행: {e}", file=sys.stderr)
+
+
     def transcribe_once(self) -> STTResult:
         with self._lock:
             if self._closed:
@@ -229,10 +237,7 @@ class QwenSTTAdapter:
                     error_detail="Qwen STT adapter is closed.",
                 )
 
-            segmenter = Segmenter(
-                self.mic,
-                self.segment_config,
-            )
+            segmenter = Segmenter(self.mic, self.segment_config, self.verifier)
 
             cancel_event = threading.Event()
 
