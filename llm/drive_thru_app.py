@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
 import json
+import queue
 import re
+import select
+import sys
 import unicodedata
 import traceback
 
@@ -28,6 +31,18 @@ from order_runtime_final import (
 from runtime_worker import (
     RuntimeWorker,
     StaleRuntimeRequest,
+)
+
+from speech_input_worker import (
+    SpeechInputWorker,
+)
+
+from ros_stt_udp_input import (
+    RosSTTUDPInput,
+)
+
+from stt_session_controller import (
+    STTSessionController,
 )
 
 
@@ -151,12 +166,72 @@ def show_waiting_for_exit():
 # INPUT
 # ============================================================
 
-def get_customer_input():
+def get_customer_input(
+    speech_worker,
+):
     """
-    추후 STT 연결 위치.
+    실제 고객 입력은 SpeechInputWorker에서 받는다.
+
+    개발 중에는 /carout, /reset 같은 명령을
+    터미널에서도 입력할 수 있게 stdin을 함께 확인한다.
     """
 
-    return input("\n고객   > ").strip()
+    while True:
+
+        # 개발자 키보드 명령
+        try:
+            readable, _, _ = select.select(
+                [sys.stdin],
+                [],
+                [],
+                0,
+            )
+        except (ValueError, OSError):
+            readable = []
+
+        if readable:
+            line = sys.stdin.readline()
+
+            if line == "":
+                raise EOFError
+
+            text = line.strip()
+
+            if text:
+                return text
+
+        # STT event
+        try:
+            event = speech_worker.get(
+                timeout=0.1
+            )
+
+        except queue.Empty:
+            continue
+
+        try:
+            if event.kind == "utterance":
+
+                print(
+                    f"\n[STT] {event.text}"
+                )
+
+                return (
+                    event.text
+                    or ""
+                )
+
+            if event.kind == "stt_reject":
+
+                if event.reply:
+                    soomac_say(
+                        event.reply
+                    )
+
+                continue
+
+        finally:
+            speech_worker.task_done()
 
 
 def get_control_input():
@@ -212,12 +287,41 @@ def normalize_command(text):
 
 class VehicleSessionController:
 
-    def __init__(self, runtime_worker):
+    def __init__(
+        self,
+        runtime_worker,
+        stt_session=None,
+    ):
         self.runtime_worker = runtime_worker
+        self.stt_session = stt_session
 
         self.state = AppState.IDLE
-
         self.vehicle_present = False
+
+    def _start_stt(self):
+        if self.stt_session is not None:
+            self.stt_session.start()
+
+    def _stop_stt(self):
+        if self.stt_session is not None:
+            self.stt_session.stop()
+
+    def reset_current_order(self):
+        """
+        같은 차량에서 주문만 초기화한다.
+
+        이전 STT queue/buffer를 먼저 폐기하고,
+        Runtime reset 완료 후 다시 수음을 시작한다.
+        """
+
+        self._stop_stt()
+
+        self.runtime_worker.invalidate_and_reset(
+            wait=True
+        )
+
+        if self.state == AppState.ORDERING:
+            self._start_stt()
 
     # --------------------------------------------------------
     # VEHICLE SIGNAL
@@ -272,8 +376,13 @@ class VehicleSessionController:
         if self.state != AppState.IDLE:
             return
 
-        # 혹시 모를 이전 고객 주문 제거
-        self.runtime_worker.invalidate_and_reset(wait=False)
+        # 이전 고객 STT 결과와 오디오를 먼저 폐기한다.
+        self._stop_stt()
+
+        # 새 고객 generation으로 완전히 전환한다.
+        self.runtime_worker.invalidate_and_reset(
+            wait=True
+        )
 
         self.state = AppState.ORDERING
 
@@ -285,11 +394,17 @@ class VehicleSessionController:
             "안녕하세요. 주문을 말씀해주세요."
         )
 
+        # 새 고객 세션에서만 STT 허용
+        self._start_stt()
+
     # --------------------------------------------------------
     # VEHICLE EXIT
     # --------------------------------------------------------
 
     def vehicle_exit(self):
+
+        # 차량 이탈 순간부터 추가 STT를 받지 않는다.
+        self._stop_stt()
 
         # 주문 중 차량이 나가버린 경우
         if self.state == AppState.ORDERING:
@@ -332,6 +447,9 @@ class VehicleSessionController:
 
         이후 차량 센서가 ON -> OFF가 되면 IDLE.
         """
+
+        # 주문 완료 이후의 음성은 다음 주문에 섞이면 안 된다.
+        self._stop_stt()
 
         self.runtime_worker.invalidate_and_reset(wait=False)
 
@@ -1686,6 +1804,26 @@ def main():
         DriveThruRuntime
     )
 
+    stt_input = RosSTTUDPInput(
+        host="127.0.0.1",
+        port=5006,
+        timeout=0.25,
+    )
+
+    speech_worker = SpeechInputWorker(
+        stt_input.receive_once,
+        generation_provider=lambda: (
+            runtime_worker.generation
+        ),
+        max_queue_size=8,
+        min_confidence=None,
+    )
+
+    stt_session = STTSessionController(
+        speech_worker,
+        input_source=stt_input,
+    )
+
     handoff_manager = (
         OrderHandoffManager(
             storage_dir=(
@@ -1697,7 +1835,8 @@ def main():
 
     session = (
         VehicleSessionController(
-            runtime_worker
+            runtime_worker,
+            stt_session=stt_session,
         )
     )
 
@@ -1727,7 +1866,9 @@ def main():
             ):
 
                 raw_text = (
-                    get_customer_input()
+                    get_customer_input(
+                        speech_worker
+                    )
                 )
 
             else:
@@ -1842,9 +1983,7 @@ def main():
 
         if command == "/reset":
 
-            runtime_worker.invalidate_and_reset(
-                wait=True
-            )
+            session.reset_current_order()
 
             pending_mobile_order_id = None
 
@@ -1865,6 +2004,8 @@ def main():
             continue
 
         if command == "/resetall":
+
+            stt_session.stop()
 
             deleted = reset_all(
                 runtime_worker,
@@ -2334,6 +2475,9 @@ def main():
             continue
 
 
+    stt_session.stop()
+    speech_worker.stop()
+    stt_input.close()
     runtime_worker.stop()
 
 
