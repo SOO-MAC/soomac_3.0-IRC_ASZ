@@ -19,9 +19,12 @@ from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from std_msgs.msg import String
 
 from qwen_stt_adapter import QwenSTTAdapter
+from stt_guard import STTResult, guard_stt_result
+
 
 SAMPLE_RATE = 16_000
 
@@ -42,22 +45,23 @@ class QwenSTTRosNode(Node):
         dev, self.min_conf = g("device_index"), g("min_confidence")
         self.debug_dir = Path(g("debug_dir")).expanduser() if g("debug_dir") else None
 
-        self.publisher = self.create_publisher(String, "/stt/text", 10)
+        qos = QoSProfile(
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.publisher = self.create_publisher(String, "/stt/text", qos)
         self.counts = {"seg": 0, "pub": 0, "noise": 0, "lowconf": 0}
 
         self.get_logger().info("Loading Qwen3-ASR...")
         self.stt = QwenSTTAdapter(
             device_index=None if dev < 0 else dev,
-            verify_speech=g("verify_speech"),
-            silero_threshold=g("silero_threshold"),
             end_silence_ms=g("end_silence_ms"),
-            # 신뢰도를 쓰려면 계산도 켜야 한다
-            scored=g("scored") or self.min_conf != 0.0,
         )
         self.get_logger().info(
-            f"READY -> /stt/text | 잡음검증 {'켬' if g('verify_speech') else '끔'} "
-            f"| 신뢰도하한 {self.min_conf if self.min_conf else '기록만'} "
+            f"READY -> /stt/text | 신뢰도하한 {self.min_conf or '기록만'} "
             f"| 디버그 {self.debug_dir or '없음'}")
+        
 
     def _dump(self, verdict: str, text: str, ev) -> None:
         """디스크를 아는 유일한 곳. 임계값을 데이터로 정하려고 남긴다."""
@@ -85,43 +89,28 @@ class QwenSTTRosNode(Node):
 
     def run(self):
         while rclpy.ok():
-            # 반드시 매 반복 맨 앞에서. 결과가 비어도 콜백은 처리돼야 한다.
             rclpy.spin_once(self, timeout_sec=0.0)
 
             result = self.stt.transcribe_once()
-            ev = self.stt.last_evidence
 
             if not result.ok:
                 self.get_logger().warning(f"STT ERROR: {result.error_code} {result.error_detail}")
                 continue
-
-            if ev:
-                self.counts["noise"] += ev.noise_rejects
-                if ev.pcm:
-                    self.counts["seg"] += 1
 
             text = (result.transcript or "").strip()
             if not text:
                 self.get_logger().debug(f"빈 결과: {result.error_detail}")
                 continue
 
-            conf = result.confidence
-            if self.min_conf != 0.0 and conf is not None and conf < self.min_conf:
-                self.counts["lowconf"] += 1
-                self.get_logger().info(f"신뢰도 미달({conf:.2f}) 버림: {text}")
-                self._dump("rejected_conf", text, ev)
+            decision = guard_stt_result(result, min_confidence=self.min_conf or None)
+            if not decision.allow:
+                self.get_logger().info(f"가드 거부({decision.reason}): {text}")
                 continue
 
-            self.publisher.publish(String(data=text))
+            self.publisher.publish(String(data=decision.text))
             self.counts["pub"] += 1
-            self._dump("accepted", text, ev)
+            self.get_logger().info(f"PUB /stt/text: {decision.text}")
 
-            extra = ""
-            if ev and ev.silero_prob is not None:
-                extra += f" silero={ev.silero_prob:.2f}"
-            if conf is not None:
-                extra += f" conf={conf:.2f}"
-            self.get_logger().info(f"PUB /stt/text: {text}{extra}")
 
     def close(self):
         c = self.counts
