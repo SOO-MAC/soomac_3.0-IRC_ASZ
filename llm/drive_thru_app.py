@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
 import json
+import queue
 import re
+import select
+import sys
 import unicodedata
 import traceback
 
@@ -23,11 +26,30 @@ from checkout_manager import (
 
 from order_runtime_final import (
     DriveThruRuntime,
+    MENU_ALIASES,
+    TYPE_ALIASES,
+    DRINK_ALIASES,
+    SIZE_ALIASES,
+    SIDE_ALIASES,
+    EXCLUDE_INGREDIENT_ALIASES,
+    FINALIZATION_KEYWORDS,
 )
 
 from runtime_worker import (
     RuntimeWorker,
     StaleRuntimeRequest,
+)
+
+from speech_input_worker import (
+    SpeechInputWorker,
+)
+
+from ros_stt_udp_input import (
+    RosSTTUDPInput,
+)
+
+from stt_session_controller import (
+    STTSessionController,
 )
 
 
@@ -151,12 +173,72 @@ def show_waiting_for_exit():
 # INPUT
 # ============================================================
 
-def get_customer_input():
+def get_customer_input(
+    speech_worker,
+):
     """
-    추후 STT 연결 위치.
+    실제 고객 입력은 SpeechInputWorker에서 받는다.
+
+    개발 중에는 /carout, /reset 같은 명령을
+    터미널에서도 입력할 수 있게 stdin을 함께 확인한다.
     """
 
-    return input("\n고객   > ").strip()
+    while True:
+
+        # 개발자 키보드 명령
+        try:
+            readable, _, _ = select.select(
+                [sys.stdin],
+                [],
+                [],
+                0,
+            )
+        except (ValueError, OSError):
+            readable = []
+
+        if readable:
+            line = sys.stdin.readline()
+
+            if line == "":
+                raise EOFError
+
+            text = line.strip()
+
+            if text:
+                return text
+
+        # STT event
+        try:
+            event = speech_worker.get(
+                timeout=0.1
+            )
+
+        except queue.Empty:
+            continue
+
+        try:
+            if event.kind == "utterance":
+
+                print(
+                    f"\n[STT] {event.text}"
+                )
+
+                return (
+                    event.text
+                    or ""
+                )
+
+            if event.kind == "stt_reject":
+
+                if event.reply:
+                    soomac_say(
+                        event.reply
+                    )
+
+                continue
+
+        finally:
+            speech_worker.task_done()
 
 
 def get_control_input():
@@ -212,12 +294,41 @@ def normalize_command(text):
 
 class VehicleSessionController:
 
-    def __init__(self, runtime_worker):
+    def __init__(
+        self,
+        runtime_worker,
+        stt_session=None,
+    ):
         self.runtime_worker = runtime_worker
+        self.stt_session = stt_session
 
         self.state = AppState.IDLE
-
         self.vehicle_present = False
+
+    def _start_stt(self):
+        if self.stt_session is not None:
+            self.stt_session.start()
+
+    def _stop_stt(self):
+        if self.stt_session is not None:
+            self.stt_session.stop()
+
+    def reset_current_order(self):
+        """
+        같은 차량에서 주문만 초기화한다.
+
+        이전 STT queue/buffer를 먼저 폐기하고,
+        Runtime reset 완료 후 다시 수음을 시작한다.
+        """
+
+        self._stop_stt()
+
+        self.runtime_worker.invalidate_and_reset(
+            wait=True
+        )
+
+        if self.state == AppState.ORDERING:
+            self._start_stt()
 
     # --------------------------------------------------------
     # VEHICLE SIGNAL
@@ -272,8 +383,13 @@ class VehicleSessionController:
         if self.state != AppState.IDLE:
             return
 
-        # 혹시 모를 이전 고객 주문 제거
-        self.runtime_worker.invalidate_and_reset(wait=False)
+        # 이전 고객 STT 결과와 오디오를 먼저 폐기한다.
+        self._stop_stt()
+
+        # 새 고객 generation으로 완전히 전환한다.
+        self.runtime_worker.invalidate_and_reset(
+            wait=True
+        )
 
         self.state = AppState.ORDERING
 
@@ -285,11 +401,17 @@ class VehicleSessionController:
             "안녕하세요. 주문을 말씀해주세요."
         )
 
+        # 새 고객 세션에서만 STT 허용
+        self._start_stt()
+
     # --------------------------------------------------------
     # VEHICLE EXIT
     # --------------------------------------------------------
 
     def vehicle_exit(self):
+
+        # 차량 이탈 순간부터 추가 STT를 받지 않는다.
+        self._stop_stt()
 
         # 주문 중 차량이 나가버린 경우
         if self.state == AppState.ORDERING:
@@ -332,6 +454,9 @@ class VehicleSessionController:
 
         이후 차량 센서가 ON -> OFF가 되면 IDLE.
         """
+
+        # 주문 완료 이후의 음성은 다음 주문에 섞이면 안 된다.
+        self._stop_stt()
 
         self.runtime_worker.invalidate_and_reset(wait=False)
 
@@ -1455,6 +1580,160 @@ def pending_retry_prompt(pending):
     )
 
 
+# ============================================================
+# ORDER DOMAIN GUARD
+# ============================================================
+
+def _build_order_domain_terms():
+    """
+    Runtime이 실제 지원하는 메뉴/옵션 alias로
+    주문 도메인 단어 집합을 만든다.
+    """
+
+    terms = set()
+
+    alias_maps = (
+        MENU_ALIASES,
+        TYPE_ALIASES,
+        DRINK_ALIASES,
+        SIZE_ALIASES,
+        SIDE_ALIASES,
+        EXCLUDE_INGREDIENT_ALIASES,
+    )
+
+    for alias_map in alias_maps:
+        for aliases in alias_map.values():
+            for alias in aliases:
+                value = re.sub(
+                    r"\s+",
+                    "",
+                    str(alias).lower(),
+                )
+
+                if value:
+                    terms.add(value)
+
+    terms.update({
+        "햄버거",
+        "버거",
+        "음료",
+        "음료수",
+        "사이드",
+        "사이드메뉴",
+        "베이컨",
+        "토핑",
+        "맥오더",
+        "모바일주문",
+        "픽업",
+        "주문번호",
+    })
+
+    return terms
+
+
+ORDER_DOMAIN_TERMS = _build_order_domain_terms()
+
+
+ASR_HALLUCINATION_PHRASES = (
+    "시청해주셔서감사합니다",
+    "시청해주셔서고맙습니다",
+    "구독과좋아요",
+    "구독좋아요",
+    "자막제공",
+)
+
+
+def has_order_domain_signal(
+    text,
+    *,
+    pending=None,
+    mobile_confirmation_pending=False,
+):
+    """
+    자연어 주문을 Python에서 해석하는 게 아니라
+    V14에 보낼 만한 '주문 관련 발화인지'만 검사한다.
+    """
+
+    raw = normalize_input(
+        str(text or "")
+    ).lower()
+
+    compact = re.sub(
+        r"\s+",
+        "",
+        raw,
+    )
+
+    if not compact:
+        return False
+
+    # 맥오더 번호 확인 중에는 네/아니요 같은 답도 정상.
+    if mobile_confirmation_pending:
+        return True
+
+    # 메뉴 / 옵션 / 재료 직접 언급
+    if any(
+        term in compact
+        for term in ORDER_DOMAIN_TERMS
+    ):
+        return True
+
+    # 주문 확정 / 종료
+    if any(
+        keyword in compact
+        for keyword in FINALIZATION_KEYWORDS
+    ):
+        return True
+
+    # 주문 취소
+    if any(
+        word in compact
+        for word in (
+            "주문취소",
+            "취소할게",
+            "취소해주세요",
+            "취소해줘",
+        )
+    ):
+        return True
+
+    # 맥오더 번호만 말하는 경우
+    if re.fullmatch(
+        r"\d{1,3}번(?:이요|요)?",
+        compact,
+    ):
+        return True
+
+    # 기존 주문을 문맥으로 사용하는 짧은 정상 발화
+    contextual_phrases = (
+        "하나더",
+        "한개더",
+        "두개더",
+        "세개더",
+        "그거",
+        "그걸",
+        "이거",
+        "이걸",
+        "저거",
+        "저걸",
+        "아까거",
+        "아까꺼",
+        "그대로",
+        "빼주세요",
+        "제외해주세요",
+        "바꿔주세요",
+        "변경해주세요",
+    )
+
+    if any(
+        phrase in compact
+        for phrase in contextual_phrases
+    ):
+        return True
+
+    return False
+
+
 def guard_customer_input(
     text,
     pending=None,
@@ -1670,6 +1949,45 @@ def guard_customer_input(
         }
 
     # ========================================================
+    # 7. ASR hallucination / 주문 도메인 밖 입력 차단
+    # ========================================================
+
+    compact_for_guard = re.sub(
+        r"\s+",
+        "",
+        raw.lower(),
+    )
+
+    if any(
+        phrase in compact_for_guard
+        for phrase in ASR_HALLUCINATION_PHRASES
+    ):
+        return {
+            "allow": False,
+            "reason": "stt_hallucination_phrase",
+            "reply": (
+                "잘 듣지 못했습니다. "
+                "주문을 다시 말씀해주세요."
+            ),
+        }
+
+    if not has_order_domain_signal(
+        raw,
+        pending=pending,
+        mobile_confirmation_pending=(
+            mobile_confirmation_pending
+        ),
+    ):
+        return {
+            "allow": False,
+            "reason": "out_of_domain_input",
+            "reply": (
+                "주문 내용을 잘 듣지 못했습니다. "
+                "메뉴와 주문 내용을 다시 말씀해주세요."
+            ),
+        }
+
+    # ========================================================
     # 정상 입력
     # ========================================================
 
@@ -1686,6 +2004,26 @@ def main():
         DriveThruRuntime
     )
 
+    stt_input = RosSTTUDPInput(
+        host="127.0.0.1",
+        port=5006,
+        timeout=0.25,
+    )
+
+    speech_worker = SpeechInputWorker(
+        stt_input.receive_once,
+        generation_provider=lambda: (
+            runtime_worker.generation
+        ),
+        max_queue_size=8,
+        min_confidence=None,
+    )
+
+    stt_session = STTSessionController(
+        speech_worker,
+        input_source=stt_input,
+    )
+
     handoff_manager = (
         OrderHandoffManager(
             storage_dir=(
@@ -1697,7 +2035,8 @@ def main():
 
     session = (
         VehicleSessionController(
-            runtime_worker
+            runtime_worker,
+            stt_session=stt_session,
         )
     )
 
@@ -1727,7 +2066,9 @@ def main():
             ):
 
                 raw_text = (
-                    get_customer_input()
+                    get_customer_input(
+                        speech_worker
+                    )
                 )
 
             else:
@@ -1842,9 +2183,7 @@ def main():
 
         if command == "/reset":
 
-            runtime_worker.invalidate_and_reset(
-                wait=True
-            )
+            session.reset_current_order()
 
             pending_mobile_order_id = None
 
@@ -1865,6 +2204,8 @@ def main():
             continue
 
         if command == "/resetall":
+
+            stt_session.stop()
 
             deleted = reset_all(
                 runtime_worker,
@@ -2334,6 +2675,9 @@ def main():
             continue
 
 
+    stt_session.stop()
+    speech_worker.stop()
+    stt_input.close()
     runtime_worker.stop()
 
 
