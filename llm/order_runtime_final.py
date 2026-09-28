@@ -641,6 +641,298 @@ def explicit_menu_values(text: str):
     return _extract_values(text, MENU_ALIASES)
 
 
+def grounded_menu_values(text: str):
+    """
+    신규 버거의 menu 값이 실제 사용자 발화에 근거했는지
+    더 엄격하게 판단한다.
+
+    full menu:
+        "새우버거", "치킨버거" -> 직접 근거로 인정
+
+    short alias:
+        "새우 하나 주세요" -> 인정
+        "불고기 세트 하나" -> 인정
+
+    하지만 다른 음식명 내부에 포함된 문자열:
+        "새우볶음밥"
+        "불고기덮밥"
+        "치킨마요덮밥"
+    은 버거 메뉴 근거로 인정하지 않는다.
+    """
+
+    raw = normalize_text(text).lower()
+    compact = compact_text(text)
+
+    found = set()
+
+    # 짧은 alias 뒤에 붙어도 정상적인 주문 표현으로 볼 수 있는 형태.
+    short_boundary = (
+        r"(?=$|[\s,.!?]|"
+        r"(?:은|는|이|가|을|를|도|만|요|로|으로)"
+        r"(?=$|[\s,.!?])|"
+        r"(?:주세요|줘|하나|한개|두개|세개|네개|세트|단품)"
+        r"(?=$|[\s,.!?]))"
+    )
+
+    for value, aliases in MENU_ALIASES.items():
+
+        full_aliases = []
+        short_aliases = []
+
+        for alias in aliases:
+            if "버거" in compact_text(alias):
+                full_aliases.append(alias)
+            else:
+                short_aliases.append(alias)
+
+        # "새우버거"처럼 실제 메뉴명을 직접 말한 경우.
+        if any(
+            compact_text(alias) in compact
+            for alias in full_aliases
+        ):
+            found.add(value)
+            continue
+
+        # "새우 하나", "불고기 세트"처럼 short alias 자체를
+        # 하나의 주문 단위로 말한 경우만 인정한다.
+        for alias in short_aliases:
+
+            pattern = (
+                re.escape(
+                    normalize_text(alias).lower()
+                )
+                + short_boundary
+            )
+
+            if re.search(pattern, raw):
+                found.add(value)
+                break
+
+    return found
+
+
+CONTEXTUAL_REPEAT_PHRASES = (
+    "하나더",
+    "한개더",
+    "두개더",
+    "세개더",
+    "같은거",
+    "같은걸",
+    "같은것",
+    "똑같이",
+    "그거하나더",
+    "그걸하나더",
+    "아까거",
+    "아까꺼",
+)
+
+
+def guard_add_menu_grounding(
+    utterance: str,
+    state,
+    update,
+):
+    """
+    LLM이 신규 burger를 add할 때 menu가 사용자 발화 또는
+    기존 주문 문맥에 실제로 근거했는지 검증한다.
+
+    막아야 하는 예:
+        "새우볶음밥 하나 주세요"
+            -> LLM shrimp_burger
+
+        "치즈돈까스 주세요"
+            -> LLM cheese_burger
+
+        "닭도리탕 주세요"
+            -> LLM chicken_burger
+
+    허용해야 하는 예:
+        "새우버거 하나 주세요"
+        "새우 하나 주세요"
+
+        기존 state에 불고기버거가 있을 때
+        "하나 더 주세요"
+            -> bulgogi_burger 반복
+    """
+
+    warnings = []
+
+    if val(update.intent) != "order":
+        return update, warnings
+
+    data = update.model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+
+    actions = data.get(
+        "actions",
+        [],
+    )
+
+    grounded = grounded_menu_values(
+        utterance
+    )
+
+    compact = compact_text(
+        utterance
+    )
+
+    contextual_repeat = any(
+        phrase in compact
+        for phrase in CONTEXTUAL_REPEAT_PHRASES
+    )
+
+    state_items = state.get(
+        "items",
+        [],
+    )
+
+    existing_burger_menus = {
+        item.get("menu")
+        for item in state_items
+        if (
+            item.get("item_type") == "burger"
+            and item.get("menu") is not None
+        )
+    }
+
+    # 기존 item 일부를 분리하기 위해
+    # adjust_quantity(-N) + add(N) 하는 케이스 보호.
+    reductions = [
+        action
+        for action in actions
+        if (
+            action.get("operation")
+            == "adjust_quantity"
+            and action.get(
+                "quantity_delta",
+                0,
+            ) < 0
+        )
+    ]
+
+    for index, action in enumerate(
+        actions,
+        start=1,
+    ):
+
+        if action.get("operation") != "add":
+            continue
+
+        patch = action.get("item")
+
+        if not isinstance(patch, dict):
+            continue
+
+        if patch.get("item_type") != "burger":
+            continue
+
+        menu = patch.get("menu")
+
+        if menu is None:
+            raise ModelOutputError(
+                f"action[{index}]: 신규 burger의 menu가 누락되었습니다.",
+                code="UNGROUNDED_MENU",
+                reply=(
+                    "어떤 버거를 주문하시는지 "
+                    "다시 말씀해주세요."
+                ),
+            )
+
+        # ----------------------------------------------------
+        # 1. 사용자가 실제 해당 메뉴를 말했다.
+        # ----------------------------------------------------
+
+        if menu in grounded:
+            continue
+
+        # 사용자가 다른 메뉴를 명시했는데
+        # LLM이 엉뚱한 메뉴를 만들었다.
+        if grounded:
+            raise ModelOutputError(
+                f"action[{index}]: "
+                f"LLM menu={menu}, "
+                f"사용자 명시 menu={sorted(grounded)}",
+                code="UNGROUNDED_MENU",
+                reply=(
+                    "메뉴를 정확히 확인하지 못했습니다. "
+                    "주문하실 버거 메뉴를 다시 말씀해주세요."
+                ),
+            )
+
+        # ----------------------------------------------------
+        # 2. "하나 더" 같은 기존 주문 반복.
+        # 새 메뉴를 만들어내는 것은 금지하고,
+        # 실제 state에 존재하는 메뉴만 허용한다.
+        # ----------------------------------------------------
+
+        if (
+            contextual_repeat
+            and menu in existing_burger_menus
+        ):
+            continue
+
+        # ----------------------------------------------------
+        # 3. 기존 quantity를 분리하면서 같은 메뉴를
+        #    새로운 line으로 만드는 내부 표현.
+        # ----------------------------------------------------
+
+        split_from_existing = False
+
+        if len(reductions) == 1:
+
+            reduction = reductions[0]
+
+            target = (
+                reduction.get("target")
+                or {}
+            )
+
+            source = next(
+                (
+                    item
+                    for item in state_items
+                    if item.get("line_id")
+                    == target.get("line_id")
+                ),
+                None,
+            )
+
+            if (
+                source
+                and source.get("item_type")
+                == "burger"
+                and source.get("menu")
+                == menu
+                and patch.get("quantity")
+                == -reduction.get(
+                    "quantity_delta",
+                    0,
+                )
+            ):
+                split_from_existing = True
+
+        if split_from_existing:
+            continue
+
+        # ----------------------------------------------------
+        # 근거 없는 신규 메뉴 생성
+        # ----------------------------------------------------
+
+        raise ModelOutputError(
+            f"action[{index}]: "
+            f"사용자 발화에 근거 없는 신규 burger menu={menu}",
+            code="UNGROUNDED_MENU",
+            reply=(
+                "해당 메뉴를 정확히 확인하지 못했습니다. "
+                "주문 가능한 버거 메뉴를 다시 말씀해주세요."
+            ),
+        )
+
+    return update, warnings
+
+
 def explicit_type_values(text: str):
     return _extract_values(text, TYPE_ALIASES)
 
@@ -2092,6 +2384,16 @@ class DriveThruRuntime:
             update,
         )
         warnings.extend(mobile_warnings)
+
+        # ----------------------------------------------------
+        # 1-1. 신규 burger menu closed-world grounding
+        # ----------------------------------------------------
+        update, grounding_warnings = guard_add_menu_grounding(
+            utterance,
+            before,
+            update,
+        )
+        warnings.extend(grounding_warnings)
 
         # ----------------------------------------------------
         # 2. 메뉴/옵션 semantic verifier
