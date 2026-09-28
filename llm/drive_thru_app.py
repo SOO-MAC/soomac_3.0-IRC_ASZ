@@ -26,6 +26,13 @@ from checkout_manager import (
 
 from order_runtime_final import (
     DriveThruRuntime,
+    MENU_ALIASES,
+    TYPE_ALIASES,
+    DRINK_ALIASES,
+    SIZE_ALIASES,
+    SIDE_ALIASES,
+    EXCLUDE_INGREDIENT_ALIASES,
+    FINALIZATION_KEYWORDS,
 )
 
 from runtime_worker import (
@@ -1573,6 +1580,160 @@ def pending_retry_prompt(pending):
     )
 
 
+# ============================================================
+# ORDER DOMAIN GUARD
+# ============================================================
+
+def _build_order_domain_terms():
+    """
+    Runtime이 실제 지원하는 메뉴/옵션 alias로
+    주문 도메인 단어 집합을 만든다.
+    """
+
+    terms = set()
+
+    alias_maps = (
+        MENU_ALIASES,
+        TYPE_ALIASES,
+        DRINK_ALIASES,
+        SIZE_ALIASES,
+        SIDE_ALIASES,
+        EXCLUDE_INGREDIENT_ALIASES,
+    )
+
+    for alias_map in alias_maps:
+        for aliases in alias_map.values():
+            for alias in aliases:
+                value = re.sub(
+                    r"\s+",
+                    "",
+                    str(alias).lower(),
+                )
+
+                if value:
+                    terms.add(value)
+
+    terms.update({
+        "햄버거",
+        "버거",
+        "음료",
+        "음료수",
+        "사이드",
+        "사이드메뉴",
+        "베이컨",
+        "토핑",
+        "맥오더",
+        "모바일주문",
+        "픽업",
+        "주문번호",
+    })
+
+    return terms
+
+
+ORDER_DOMAIN_TERMS = _build_order_domain_terms()
+
+
+ASR_HALLUCINATION_PHRASES = (
+    "시청해주셔서감사합니다",
+    "시청해주셔서고맙습니다",
+    "구독과좋아요",
+    "구독좋아요",
+    "자막제공",
+)
+
+
+def has_order_domain_signal(
+    text,
+    *,
+    pending=None,
+    mobile_confirmation_pending=False,
+):
+    """
+    자연어 주문을 Python에서 해석하는 게 아니라
+    V14에 보낼 만한 '주문 관련 발화인지'만 검사한다.
+    """
+
+    raw = normalize_input(
+        str(text or "")
+    ).lower()
+
+    compact = re.sub(
+        r"\s+",
+        "",
+        raw,
+    )
+
+    if not compact:
+        return False
+
+    # 맥오더 번호 확인 중에는 네/아니요 같은 답도 정상.
+    if mobile_confirmation_pending:
+        return True
+
+    # 메뉴 / 옵션 / 재료 직접 언급
+    if any(
+        term in compact
+        for term in ORDER_DOMAIN_TERMS
+    ):
+        return True
+
+    # 주문 확정 / 종료
+    if any(
+        keyword in compact
+        for keyword in FINALIZATION_KEYWORDS
+    ):
+        return True
+
+    # 주문 취소
+    if any(
+        word in compact
+        for word in (
+            "주문취소",
+            "취소할게",
+            "취소해주세요",
+            "취소해줘",
+        )
+    ):
+        return True
+
+    # 맥오더 번호만 말하는 경우
+    if re.fullmatch(
+        r"\d{1,3}번(?:이요|요)?",
+        compact,
+    ):
+        return True
+
+    # 기존 주문을 문맥으로 사용하는 짧은 정상 발화
+    contextual_phrases = (
+        "하나더",
+        "한개더",
+        "두개더",
+        "세개더",
+        "그거",
+        "그걸",
+        "이거",
+        "이걸",
+        "저거",
+        "저걸",
+        "아까거",
+        "아까꺼",
+        "그대로",
+        "빼주세요",
+        "제외해주세요",
+        "바꿔주세요",
+        "변경해주세요",
+    )
+
+    if any(
+        phrase in compact
+        for phrase in contextual_phrases
+    ):
+        return True
+
+    return False
+
+
 def guard_customer_input(
     text,
     pending=None,
@@ -1785,6 +1946,45 @@ def guard_customer_input(
             "allow": False,
             "reason": "incomplete_category",
             "reply": reply,
+        }
+
+    # ========================================================
+    # 7. ASR hallucination / 주문 도메인 밖 입력 차단
+    # ========================================================
+
+    compact_for_guard = re.sub(
+        r"\s+",
+        "",
+        raw.lower(),
+    )
+
+    if any(
+        phrase in compact_for_guard
+        for phrase in ASR_HALLUCINATION_PHRASES
+    ):
+        return {
+            "allow": False,
+            "reason": "stt_hallucination_phrase",
+            "reply": (
+                "잘 듣지 못했습니다. "
+                "주문을 다시 말씀해주세요."
+            ),
+        }
+
+    if not has_order_domain_signal(
+        raw,
+        pending=pending,
+        mobile_confirmation_pending=(
+            mobile_confirmation_pending
+        ),
+    ):
+        return {
+            "allow": False,
+            "reason": "out_of_domain_input",
+            "reply": (
+                "주문 내용을 잘 듣지 못했습니다. "
+                "메뉴와 주문 내용을 다시 말씀해주세요."
+            ),
         }
 
     # ========================================================
