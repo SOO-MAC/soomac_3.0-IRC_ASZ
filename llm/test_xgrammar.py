@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import sys
 from typing import Any
 
@@ -24,13 +25,15 @@ from order_runtime_final import (
 
 PROBE_REPEAT = 20
 
+TEST_API_BASE = os.getenv("SOOMAC_LLM_URL", API_BASE)
+
 
 # ============================================================
 # CLIENT
 # ============================================================
 
 client = OpenAI(
-    base_url=API_BASE,
+    base_url=TEST_API_BASE,
     api_key=API_KEY,
 )
 
@@ -1145,7 +1148,7 @@ def main():
     )
 
     print(
-        f"API   : {API_BASE}"
+        f"API   : {TEST_API_BASE}"
     )
 
     print(

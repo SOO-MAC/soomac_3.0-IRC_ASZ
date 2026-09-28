@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import copy
 import json
-import os
 import re
 import unicodedata
 from typing import Any
@@ -57,7 +56,7 @@ class InternalInvariantError(OrderRuntimeError):
 from order_update_schema import OrderUpdate
 
 
-API_BASE = os.getenv("SOOMAC_LLM_URL", "http://127.0.0.1:8000/v1")
+API_BASE = "http://127.0.0.1:8000/v1"
 API_KEY = "EMPTY"
 MODEL_NAME = "drive-thru-v14"
 
@@ -1824,8 +1823,15 @@ def make_confirm_update():
 
 class V6Parser:
     def __init__(self):
+        import os
+
+        api_base = os.getenv(
+            "SOOMAC_LLM_URL",
+            API_BASE,
+        )
+
         self.client = OpenAI(
-            base_url=API_BASE,
+            base_url=api_base,
             api_key=API_KEY,
         )
 

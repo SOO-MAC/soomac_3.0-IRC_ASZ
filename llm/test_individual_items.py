@@ -17,6 +17,8 @@ nodes = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))
 namespace = dict(copy=copy, json=json, re=re, unicodedata=unicodedata, Any=Any)
 exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), 'exec'), namespace)
 Manager = namespace['OrderStateManager']
+ModelOutputError = namespace['ModelOutputError']
+InternalInvariantError = namespace['InternalInvariantError']
 
 def action(op, line=None, item=None, **kwargs):
     fields = dict(operation=op, target={'line_id': line} if line else None,
@@ -74,13 +76,13 @@ class IndividualTests(unittest.TestCase):
     def test_invalid_batch_rollback(self):
         self.m.apply(update(action('add',item=dict(item_type='side',quantity=1,side='cheese_stick'))))
         before=copy.deepcopy(self.m.__dict__)
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(InternalInvariantError):
             self.m.apply(update(action('modify',1,{'menu':'bulgogi_burger'}),action('modify',6,{'menu':'bulgogi_burger'})))
         self.assertEqual(self.m.__dict__,before)
 
     def test_empty_modify_rejected(self):
         before=copy.deepcopy(self.m.__dict__)
-        with self.assertRaises(RuntimeError): self.m.apply(update(action('modify',1)))
+        with self.assertRaises(ModelOutputError): self.m.apply(update(action('modify',1)))
         self.assertEqual(self.m.__dict__,before)
 
     def test_positive_quantity_expands(self):
@@ -120,12 +122,22 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(fixed['actions'][0]['item']['item_type'],'side')
 
     def test_missing_item_not_fabricated(self):
-        with self.assertRaises(RuntimeError): self.repair(None)
-        with self.assertRaises(RuntimeError): self.repair({})
+        with self.assertRaises(ModelOutputError): self.repair(None)
+        with self.assertRaises(ModelOutputError): self.repair({})
 
     def test_ambiguous_or_conflicting_kind_rejected(self):
-        with self.assertRaises(RuntimeError): self.repair({'drink':'coke','side':'cheese_stick'})
-        with self.assertRaises(RuntimeError): self.repair({'item_type':'side','menu':'cheese_burger','side':'cheese_stick'})
+        with self.assertRaises(ModelOutputError): self.repair({'drink':'coke','side':'cheese_stick'})
+        fixed, warnings = self.repair({
+            'item_type': 'side',
+            'menu': 'cheese_burger',
+            'side': 'cheese_stick',
+        })
+        patch = fixed['actions'][0]['item']
+
+        self.assertEqual(patch['item_type'], 'side')
+        self.assertEqual(patch['side'], 'cheese_stick')
+        self.assertNotIn('menu', patch)
+        self.assertTrue(warnings)
 
 class SubsetTests(unittest.TestCase):
     def setUp(self):
@@ -144,15 +156,15 @@ class SubsetTests(unittest.TestCase):
         self.assertEqual(len(fixed['actions']),3)
     def test_mixed_items_rejected(self):
         self.m.state['items'][4]['menu']='chicken_burger'
-        with self.assertRaises(RuntimeError): self.check('그중 두 개만 변경')
+        with self.assertRaises(ModelOutputError): self.check('그중 두 개만 변경')
     def test_mixed_changes_rejected(self):
         self.data['actions'][4]['item']['menu']='chicken_burger'
-        with self.assertRaises(RuntimeError): self.check('그중 두 개만 변경')
+        with self.assertRaises(ModelOutputError): self.check('그중 두 개만 변경')
     def test_underselection_rejected(self):
         self.data['actions']=self.data['actions'][:1]
-        with self.assertRaises(RuntimeError): self.check('그중 두 개만 변경')
+        with self.assertRaises(ModelOutputError): self.check('그중 두 개만 변경')
     def test_no_arbitrary_truncation(self):
-        with self.assertRaises(RuntimeError): self.check('치즈버거 두 개만 변경')
+        with self.assertRaises(ModelOutputError): self.check('치즈버거 두 개만 변경')
 
 if __name__=='__main__':
     unittest.main(verbosity=2)

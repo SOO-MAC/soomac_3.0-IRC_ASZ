@@ -72,14 +72,14 @@ manager.apply(
 
 check(
     len(manager.state["items"]),
-    1,
-    "동일 음료 line 병합",
+    3,
+    "동일 음료 개별 line 유지",
 )
 
 check(
-    manager.state["items"][0]["quantity"],
-    3,
-    "동일 음료 수량 합산",
+    [item["quantity"] for item in manager.state["items"]],
+    [1, 1, 1],
+    "동일 음료 개별 수량 유지",
 )
 
 manager.apply(
@@ -94,9 +94,15 @@ manager.apply(
 )
 
 check(
-    manager.state["items"][0]["quantity"],
+    len(manager.state["items"]),
     2,
-    "adjust_quantity",
+    "adjust_quantity 대상 line 제거",
+)
+
+check(
+    [item["quantity"] for item in manager.state["items"]],
+    [1, 1],
+    "adjust_quantity 후 개별 line 유지",
 )
 
 print("\n✅ deterministic runtime 전체 테스트 PASS")
