@@ -2,6 +2,7 @@
 
 import json
 import queue
+import socket
 import re
 import select
 import sys
@@ -52,12 +53,31 @@ from stt_session_controller import (
     STTSessionController,
 )
 
+from ui_runtime_bridge import (
+    start_customer_ui_server,
+    stop_customer_ui_server,
+    ui_reset_for_vehicle,
+    ui_add_customer_message,
+    ui_add_staff_message,
+    ui_set_voice_mode,
+    ui_set_order_items,
+    ui_set_order_meta,
+)
+
 
 # ============================================================
 # CONFIG
 # ============================================================
 
 WIDTH = 68
+
+TTS_UDP_HOST = "127.0.0.1"
+TTS_UDP_PORT = 5007
+
+_tts_udp_socket = socket.socket(
+    socket.AF_INET,
+    socket.SOCK_DGRAM,
+)
 
 
 # ============================================================
@@ -152,11 +172,58 @@ def system_message(text):
 
 def soomac_say(text):
     """
-    추후 TTS 연결 위치.
+    고객에게 전달해야 하는 STAFF 응답.
+
+    1. Customer UI에 표시
+    2. TTS ROS2 bridge로 전송
     """
 
+    text = str(text or "").strip()
+
+    if not text:
+        return
+
+    # --------------------------------------------------------
+    # CUSTOMER UI
+    # --------------------------------------------------------
+
+    ui_add_staff_message(
+        text
+    )
+
+    # --------------------------------------------------------
+    # TTS
+    #
+    # app.py -> UDP 5007 -> tts_text_publisher.py
+    #        -> ROS2 /tts/text
+    # --------------------------------------------------------
+
+    try:
+
+        _tts_udp_socket.sendto(
+            text.encode("utf-8"),
+            (
+                TTS_UDP_HOST,
+                TTS_UDP_PORT,
+            ),
+        )
+
+    except OSError as e:
+
+        print(
+            f"[TTS UDP ERROR] {e}"
+        )
+
+    # TTS 완료 callback은 아직 없으므로
+    # 현재는 STAFF 응답 생성 후 다시 LISTENING 상태로 복귀
+    ui_set_voice_mode(
+        "listening"
+    )
+
     print()
-    print(f"SOOMAC > {text}")
+    print(
+        f"STAFF > {text}"
+    )
 
 
 def show_idle():
@@ -219,14 +286,16 @@ def get_customer_input(
         try:
             if event.kind == "utterance":
 
-                print(
-                    f"\n[STT] {event.text}"
-                )
-
-                return (
+                customer_text = (
                     event.text
                     or ""
                 )
+
+                print(
+                    f"\n[STT] {customer_text}"
+                )
+
+                return customer_text
 
             if event.kind == "stt_reject":
 
@@ -391,6 +460,9 @@ class VehicleSessionController:
             wait=True
         )
 
+        # 고객 화면도 새 주문 세션으로 초기화한다.
+        ui_reset_for_vehicle()
+
         self.state = AppState.ORDERING
 
         system_message(
@@ -409,6 +481,10 @@ class VehicleSessionController:
     # --------------------------------------------------------
 
     def vehicle_exit(self):
+
+        ui_set_voice_mode(
+            "standby"
+        )
 
         # 차량 이탈 순간부터 추가 STT를 받지 않는다.
         self._stop_stt()
@@ -461,6 +537,10 @@ class VehicleSessionController:
         self.runtime_worker.invalidate_and_reset(wait=False)
 
         self.state = AppState.WAITING_FOR_EXIT
+
+        ui_set_voice_mode(
+            "complete"
+        )
 
         show_waiting_for_exit()
 
@@ -2000,6 +2080,11 @@ def guard_customer_input(
 
 def main():
 
+    start_customer_ui_server(
+        host="127.0.0.1",
+        port=8080,
+    )
+
     runtime_worker = RuntimeWorker(
         DriveThruRuntime
     )
@@ -2348,6 +2433,43 @@ def main():
         text = text.strip()
 
         # ====================================================
+        # CUSTOMER -> UI
+        # STT 입력이든 터미널 입력이든 여기서 한 번만 처리한다.
+        # ====================================================
+
+        ui_add_customer_message(
+            text
+        )
+
+        ui_set_voice_mode(
+            "processing"
+        )
+
+        # ====================================================
+        # GREETING
+        # ====================================================
+
+        greeting_text = re.sub(
+            r"[\\s!?.,~]+",
+            "",
+            text,
+        )
+
+        if greeting_text in {
+            "안녕하세요",
+            "안녕",
+            "안녕하십니까",
+            "반갑습니다",
+            "반가워요"
+        }:
+
+            soomac_say(
+                "안녕하세요 주문 내용을 말씀해주세요."
+            )
+
+            continue
+
+        # ====================================================
         # MOBILE PICKUP CONFIRMATION
         # ====================================================
         # mobile_pickup은 번호를 인식하자마자 handoff하지 않는다.
@@ -2404,6 +2526,13 @@ def main():
                     continue
 
                 last_handoff = handoff
+
+                ui_set_order_meta(
+                    order_id=handoff.get("order_id"),
+                    mobile_order_id=handoff.get("mobile_order_id"),
+                    total_price=handoff.get("total_price"),
+                    order_mode="mobile",
+                )
 
                 show_mobile_complete(
                     handoff
@@ -2510,6 +2639,18 @@ def main():
                 result
             )
 
+        # Runtime이 확정한 현재 주문 상태를
+        # 고객 화면에 그대로 전달한다.
+        ui_set_order_items(
+            result.get(
+                "state",
+                {},
+            ).get(
+                "items",
+                [],
+            )
+        )
+
         # ====================================================
         # HANDLED ORDER ERROR
         # ====================================================
@@ -2589,6 +2730,13 @@ def main():
                 continue
 
             last_handoff = handoff
+
+            ui_set_order_meta(
+                order_id=handoff.get("order_id"),
+                mobile_order_id=None,
+                total_price=handoff.get("total_price"),
+                order_mode="counter",
+            )
 
             show_counter_complete(
                 handoff
@@ -2679,6 +2827,8 @@ def main():
     speech_worker.stop()
     stt_input.close()
     runtime_worker.stop()
+
+    stop_customer_ui_server()
 
 
 # ============================================================

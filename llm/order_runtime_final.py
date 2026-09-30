@@ -573,6 +573,171 @@ def repair_pending_burger_modifiers(utterance: str, state, pending, update):
 
     return OrderUpdate.model_validate(data), warnings
 
+
+# ============================================================
+# deterministic topping grounding guard
+# ============================================================
+
+TOPPING_ALIASES = {
+    "cheese": ("치즈",),
+    "bacon": ("베이컨",),
+    "tomato": ("토마토",),
+}
+
+
+def explicit_topping_add_values(text: str):
+    """
+    사용자가 실제로 '토핑 추가'를 요청한 경우만 반환한다.
+
+    단순히 '치즈버거'라고 말했다고
+    cheese topping으로 인식하면 안 된다.
+
+    인정 예:
+        치즈 추가해주세요
+        베이컨 넣어주세요
+        토마토 더 넣어줘
+
+    비인정 예:
+        치즈버거 주세요
+        감자튀김이랑 콜라 주세요
+        라지로 주세요
+    """
+
+    raw = compact_text(text)
+
+    found = set()
+
+    for value, aliases in TOPPING_ALIASES.items():
+
+        for alias in aliases:
+
+            a = re.escape(
+                compact_text(alias)
+            )
+
+            stem = (
+                rf"{a}"
+                rf"(?:은|는|을|를|도|만)?"
+            )
+
+            patterns = (
+                rf"{stem}추가",
+                rf"{stem}넣어",
+                rf"{stem}더",
+                rf"{stem}올려",
+            )
+
+            if any(
+                re.search(
+                    pattern,
+                    raw,
+                )
+                for pattern in patterns
+            ):
+                found.add(value)
+                break
+
+    return found
+
+
+def guard_topping_grounding(
+    utterance,
+    state,
+    update,
+):
+    """
+    LLM이 사용자가 말하지 않은 topping을
+    임의로 추가하지 못하게 한다.
+
+    toppings_add는 사용자 발화에 명시적으로
+    근거한 값만 허용한다.
+    """
+
+    warnings = []
+
+    if val(update.intent) != "order":
+        return update, warnings
+
+    requested = (
+        explicit_topping_add_values(
+            utterance
+        )
+    )
+
+    data = update.model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+
+    actions = data.get(
+        "actions",
+        [],
+    )
+
+    for index, action in enumerate(
+        actions,
+        start=1,
+    ):
+
+        toppings = set(
+            action.get(
+                "toppings_add",
+                [],
+            )
+            or []
+        )
+
+        if not toppings:
+            continue
+
+        allowed = (
+            toppings
+            &
+            requested
+        )
+
+        removed = (
+            toppings
+            -
+            allowed
+        )
+
+        if removed:
+
+            action["toppings_add"] = (
+                sorted(allowed)
+            )
+
+            warnings.append(
+                f"action[{index}] "
+                "근거 없는 topping 추가 차단: "
+                + ", ".join(
+                    sorted(removed)
+                )
+            )
+
+    try:
+
+        verified = (
+            OrderUpdate.model_validate(
+                data
+            )
+        )
+
+    except Exception as e:
+
+        warnings.append(
+            "topping grounding 재검증 실패 "
+            "-> 원본 유지: "
+            f"{type(e).__name__}: {e}"
+        )
+
+        return update, warnings
+
+    return verified, warnings
+
+
+
 FINALIZATION_KEYWORDS = (
     "마무리",
     "주문확정",
@@ -1134,6 +1299,579 @@ def ordered_values_for_field(utterance: str, field: str):
 def is_correction_utterance(utterance: str) -> bool:
     raw = compact_text(utterance)
     return any(word in raw for word in CORRECTION_WORDS)
+
+
+
+# === ASZ CORRECTION PRIORITY PATCH START ===
+
+def _explicit_values_with_correction_priority(
+    utterance: str,
+    field: str,
+    alias_map,
+):
+    """
+    'A 말고 B', 'A 아니고 B', 'A 대신 B'처럼
+    정정 표현이 있으면 정정 표현 뒤의 값을 우선한다.
+
+    예:
+        콜라 말고 제로콜라
+            -> zero_coke
+
+        감자튀김 말고 치즈스틱
+            -> cheese_stick
+
+        콜라랑 사이다
+            -> coke + sprite
+            (정정 표현이 없으므로 둘 다 유지)
+
+    다른 필드에 있는 '말고' 때문에 잘못 영향을 받지 않도록,
+    correction marker 뒤에 실제 해당 field 값이 있는 경우만 적용한다.
+    """
+
+    # 긴 alias 우선 + 겹치는 alias 제거
+    # "제로콜라" 안의 "콜라"를 별도 coke로 잡지 않는다.
+    base_values = set(
+        _ordered_alias_values(
+            utterance,
+            alias_map,
+        )
+    )
+
+    raw = compact_text(
+        utterance
+    )
+
+    correction_positions = []
+
+    for word in CORRECTION_WORDS:
+
+        start = 0
+
+        while True:
+
+            index = raw.find(
+                word,
+                start,
+            )
+
+            if index < 0:
+                break
+
+            correction_positions.append(
+                (
+                    index,
+                    word,
+                )
+            )
+
+            start = (
+                index
+                + len(word)
+            )
+
+
+    # 뒤쪽 correction부터 검사한다.
+    # 단, 해당 field 값이 실제 뒤에 있어야 그 correction을 사용한다.
+    correction_positions.sort(
+        key=lambda x: x[0],
+        reverse=True,
+    )
+
+
+    for index, word in correction_positions:
+
+        tail = raw[
+            index + len(word):
+        ]
+
+        corrected_values = (
+            _ordered_alias_values(
+                tail,
+                alias_map,
+            )
+        )
+
+        if corrected_values:
+
+            return set(
+                corrected_values
+            )
+
+
+    return base_values
+
+
+def explicit_drink_values(text: str):
+    """
+    음료 grounding.
+
+    제로콜라 내부의 '콜라' 중복 검출 방지 +
+    '콜라 말고 제로콜라'에서는 최종 제로콜라 우선.
+    """
+
+    return (
+        _explicit_values_with_correction_priority(
+            text,
+            "drink",
+            DRINK_ALIASES,
+        )
+    )
+
+
+def explicit_side_values(text: str):
+    """
+    사이드 grounding.
+
+    '감자튀김 말고 치즈스틱'이면
+    최종 치즈스틱을 우선한다.
+    """
+
+    return (
+        _explicit_values_with_correction_priority(
+            text,
+            "side",
+            SIDE_ALIASES,
+        )
+    )
+
+
+# === ASZ CORRECTION PRIORITY PATCH END ===
+
+
+# === ASZ SELF CORRECTION + PENDING GUARD ===
+
+SELF_CORRECTION_MARKERS = (
+    # 기존 정정 표현
+    "말고",
+    "아니고",
+    "대신",
+    "변경",
+    "바꿔",
+    "바꾸",
+
+    # 실제 음성 주문에서 자주 나오는 self-correction
+    "아아니다",
+    "아니다",
+    "아니아니다",
+    "아아니",
+    "아니",
+    "아니요",
+    "아잠깐",
+    "잠깐",
+)
+
+
+def _correction_tail(text: str):
+    """
+    마지막 self-correction 표현 뒤의 발화를 반환한다.
+
+    예:
+        "감자튀김이랑 사이다 아 아니다
+         치즈스틱이랑 제로콜라 라지로 주세요"
+
+        ->
+        "치즈스틱이랑제로콜라라지로주세요"
+
+    정정 표현이 없으면 None.
+    """
+
+    raw = compact_text(text)
+
+    candidates = []
+
+    for marker in SELF_CORRECTION_MARKERS:
+
+        start = 0
+
+        while True:
+
+            index = raw.find(
+                marker,
+                start,
+            )
+
+            if index < 0:
+                break
+
+            tail_start = (
+                index
+                + len(marker)
+            )
+
+            candidates.append(
+                (
+                    tail_start,
+                    raw[tail_start:],
+                )
+            )
+
+            start = index + 1
+
+
+    if not candidates:
+        return None
+
+
+    # 가장 마지막 정정 표현을 우선한다.
+    candidates.sort(
+        key=lambda x: x[0],
+        reverse=True,
+    )
+
+
+    for _, tail in candidates:
+
+        if tail:
+            return tail
+
+
+    return None
+
+
+def _explicit_with_self_correction(
+    text: str,
+    alias_map,
+):
+    """
+    정정 표현 뒤에 해당 field 값이 있으면
+    앞에서 말한 값을 폐기하고 뒤의 값만 사용한다.
+
+    정정 표현 뒤에 해당 field 값이 하나도 없으면
+    원래 전체 발화를 사용한다.
+    """
+
+    tail = _correction_tail(text)
+
+    if tail:
+
+        corrected = set(
+            _ordered_alias_values(
+                tail,
+                alias_map,
+            )
+        )
+
+        if corrected:
+            return corrected
+
+
+    return set(
+        _ordered_alias_values(
+            text,
+            alias_map,
+        )
+    )
+
+
+# 아래 함수들은 앞에서 정의된 동명의 함수를
+# 의도적으로 override한다.
+
+
+def explicit_type_values(text: str):
+
+    return _explicit_with_self_correction(
+        text,
+        TYPE_ALIASES,
+    )
+
+
+def explicit_drink_values(text: str):
+
+    return _explicit_with_self_correction(
+        text,
+        DRINK_ALIASES,
+    )
+
+
+def explicit_size_values(text: str):
+
+    return _explicit_with_self_correction(
+        text,
+        SIZE_ALIASES,
+    )
+
+
+def explicit_side_values(text: str):
+
+    return _explicit_with_self_correction(
+        text,
+        SIDE_ALIASES,
+    )
+
+
+def repair_pending_option_bundle(
+    utterance,
+    state,
+    pending,
+    update,
+):
+    """
+    현재 세트/음료의 옵션을 질문 중인데 사용자가
+    한 문장에서 여러 옵션을 답한 경우 deterministic하게 처리한다.
+
+    가장 중요한 목적:
+        pending=(line 1, drink)
+
+        사용자:
+        "감자튀김이랑 사이다 아 아니다
+         치즈스틱이랑 제로콜라 라지로 주세요"
+
+        LLM이 새 burger add를 만들어도 무시하고
+
+        modify line 1:
+            drink=zero_coke
+            drink_size=large
+            side=cheese_stick
+
+        로 바꾼다.
+
+    보호 조건:
+    - 실제 pending이 존재
+    - pending field가 type/drink/drink_size/side
+    - 현재 pending 상품이 존재
+    - pending field에 대한 답이 발화에 정확히 하나 존재
+    - 다른 버거를 명시적으로 새로 주문한 상황은 건드리지 않음
+    """
+
+    warnings = []
+
+
+    if pending is None:
+        return update, warnings
+
+
+    pending_line_id, pending_field = pending
+
+
+    if pending_field not in {
+        "type",
+        "drink",
+        "drink_size",
+        "side",
+    }:
+        return update, warnings
+
+
+    pending_item = next(
+        (
+            item
+            for item in state.get(
+                "items",
+                [],
+            )
+            if item.get("line_id")
+            == pending_line_id
+        ),
+        None,
+    )
+
+
+    if pending_item is None:
+        return update, warnings
+
+
+    # --------------------------------------------------------
+    # "치킨버거 하나 추가"처럼 실제 새 버거 주문이면
+    # pending override를 하지 않는다.
+    # --------------------------------------------------------
+
+    explicit_menus = grounded_menu_values(
+        utterance
+    )
+
+
+    current_menu = pending_item.get(
+        "menu"
+    )
+
+
+    other_menus = {
+        menu
+        for menu in explicit_menus
+        if menu != current_menu
+    }
+
+
+    if other_menus:
+        return update, warnings
+
+
+    compact = compact_text(
+        utterance
+    )
+
+
+    # "하나 추가", "한 개 추가", "하나 더" 같은
+    # 명백한 추가 주문은 LLM의 일반 처리에 맡긴다.
+    explicit_new_item_request = any(
+        phrase in compact
+        for phrase in (
+            "하나추가",
+            "한개추가",
+            "두개추가",
+            "세개추가",
+            "하나더",
+            "한개더",
+            "두개더",
+            "세개더",
+        )
+    )
+
+
+    if explicit_new_item_request:
+        return update, warnings
+
+
+    explicit = {
+        "type":
+            explicit_type_values(
+                utterance
+            ),
+
+        "drink":
+            explicit_drink_values(
+                utterance
+            ),
+
+        "drink_size":
+            explicit_size_values(
+                utterance
+            ),
+
+        "side":
+            explicit_side_values(
+                utterance
+            ),
+    }
+
+
+    # 현재 질문에 대한 명확한 답이 반드시 있어야 한다.
+    pending_candidates = explicit.get(
+        pending_field,
+        set(),
+    )
+
+
+    if len(pending_candidates) != 1:
+        return update, warnings
+
+
+    patch = {}
+
+
+    # 한 문장에서 같이 답한 옵션도 한 번에 적용
+    for field in (
+        "type",
+        "drink",
+        "drink_size",
+        "side",
+    ):
+
+        candidates = explicit.get(
+            field,
+            set(),
+        )
+
+        if len(candidates) == 1:
+
+            patch[field] = next(
+                iter(candidates)
+            )
+
+
+    if not patch:
+        return update, warnings
+
+
+    action = {
+        "operation": "modify",
+
+        "target": {
+            "line_id":
+                pending_line_id,
+        },
+
+        "item":
+            patch,
+
+        "apply_to_all":
+            False,
+    }
+
+
+    # 같은 발화에서 "피클 빼주세요"도 말했다면 보존
+    try:
+
+        excludes = (
+            explicit_exclude_request_values(
+                utterance
+            )
+        )
+
+        if excludes:
+
+            action["exclude_add"] = sorted(
+                excludes
+            )
+
+    except Exception:
+
+        pass
+
+
+    # topping guard가 이미 존재한다면
+    # 명시적으로 말한 topping도 보존
+    try:
+
+        toppings = (
+            explicit_topping_add_values(
+                utterance
+            )
+        )
+
+        if toppings:
+
+            action["toppings_add"] = sorted(
+                toppings
+            )
+
+    except Exception:
+
+        pass
+
+
+    try:
+
+        repaired = (
+            OrderUpdate.model_validate({
+                "intent":
+                    "order",
+
+                "actions": [
+                    action
+                ],
+            })
+        )
+
+    except Exception as e:
+
+        warnings.append(
+            "pending option bundle 재검증 실패 -> "
+            f"LLM 출력 유지: {type(e).__name__}: {e}"
+        )
+
+        return update, warnings
+
+
+    warnings.append(
+        "pending option bundle deterministic 보정: "
+        f"line_id={pending_line_id}, "
+        f"patch={patch}"
+    )
+
+
+    return repaired, warnings
+
 
 
 def explicit_values_by_field(utterance: str):
@@ -2391,6 +3129,23 @@ class DriveThruRuntime:
         )
         warnings.extend(mobile_warnings)
 
+        # === ASZ PENDING BUNDLE PIPELINE ===
+        # ----------------------------------------------------
+        # 1-0. pending 옵션 응답 deterministic 처리
+        #
+        # LLM이 현재 옵션 질문 중 새 burger를 hallucination해도
+        # 실제 pending line의 modify로 보정한다.
+        # ----------------------------------------------------
+        update, pending_bundle_warnings = repair_pending_option_bundle(
+            utterance,
+            before,
+            pending_before,
+            update,
+        )
+        warnings.extend(
+            pending_bundle_warnings
+        )
+
         # ----------------------------------------------------
         # 1-1. 신규 burger menu closed-world grounding
         # ----------------------------------------------------
@@ -2411,6 +3166,16 @@ class DriveThruRuntime:
             update,
         )
         warnings.extend(semantic_warnings)
+
+        # ----------------------------------------------------
+        # 2-A. 사용자가 말하지 않은 topping hallucination 차단
+        # ----------------------------------------------------
+        update, topping_warnings = guard_topping_grounding(
+            utterance,
+            before,
+            update,
+        )
+        warnings.extend(topping_warnings)
 
                 # ----------------------------------------------------
         # 2-0. 기존 상태 reference grounding
