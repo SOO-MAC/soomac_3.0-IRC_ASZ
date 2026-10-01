@@ -755,6 +755,7 @@ FINALIZATION_KEYWORDS = (
     "주문끝",
     "주문종료",
     "끝낼게",
+    "끝낼게요"
 )
 
 PENDING_FIELD_NAME = {
@@ -1540,6 +1541,28 @@ def _explicit_with_self_correction(
     원래 전체 발화를 사용한다.
     """
 
+    # === ASZ CHANGE TARGET PRIORITY ===
+    # "감자튀김 치즈스틱으로 바꿔주세요"
+    # "콜라 제로콜라로 변경해주세요"
+    # 처럼 A -> B 변경 표현이면 마지막에 말한 B가 최종값이다.
+    raw = compact_text(text)
+
+    ordered_values = _ordered_alias_values(
+        text,
+        alias_map,
+    )
+
+    if (
+        len(ordered_values) >= 2
+        and re.search(
+            r"(?:로|으로)(?:변경|바꿔|바꾸)",
+            raw,
+        )
+    ):
+        return {
+            ordered_values[-1]
+        }
+
     tail = _correction_tail(text)
 
     if tail:
@@ -2302,6 +2325,243 @@ def verify_add_quantity(utterance: str, update):
             f"quantity verifier 재검증 실패 -> 원본 유지: {type(e).__name__}: {e}"
         )
         return update, warnings
+
+
+
+# === ASZ EXPLICIT QUANTITY ADD GUARD ===
+
+def repair_explicit_quantity_add(
+    utterance,
+    state,
+    pending,
+    update,
+):
+    """
+    명확한 단일 품목 + 명시 수량 주문을 deterministic하게 보정한다.
+
+    예:
+        치즈스틱 10개 주세요
+        감자튀김 12개 주세요
+        콜라 5잔 주세요
+        불고기버거 10개 주세요
+        불고기버거 세트 10개 주세요
+
+    중요한 보호 규칙:
+    - "10개 가능할까요?" 같은 질문은 주문으로 바꾸지 않는다.
+    - 한 문장에 여러 서로 다른 품목이 있으면 여기서 강제로 해석하지 않는다.
+    - 단일 품목 주문만 보정한다.
+    """
+
+    warnings = []
+
+    quantity = extract_explicit_quantity(
+        utterance
+    )
+
+    if quantity is None:
+        return update, warnings
+
+    # 1개는 기존 V14 처리를 그대로 사용.
+    # 여기서는 주로 2개 이상의 명시 수량을 강하게 보정한다.
+    if quantity < 2:
+        return update, warnings
+
+
+    compact = compact_text(
+        utterance
+    )
+
+
+    # --------------------------------------------------------
+    # 질문 문장을 실제 주문으로 만들어버리지 않도록 보호
+    # --------------------------------------------------------
+
+    question_markers = (
+        "가능할까요",
+        "가능해요",
+        "가능한가요",
+        "될까요",
+        "되나요",
+        "되겠어요",
+        "할수있",
+        "할수있나요",
+        "있나요",
+        "추천",
+    )
+
+    if any(
+        marker in compact
+        for marker in question_markers
+    ):
+        return update, warnings
+
+
+    # --------------------------------------------------------
+    # 주문 의도가 어느 정도 명확해야 한다.
+    # --------------------------------------------------------
+
+    request_markers = (
+        "주세요",
+        "주세",
+        "줘",
+        "주문",
+        "추가",
+        "더주세요",
+        "더줘",
+        "담아",
+        "넣어",
+    )
+
+    explicit_request = any(
+        marker in compact
+        for marker in request_markers
+    )
+
+    # "치즈스틱 10개", "콜라 5잔요" 같은 축약 주문도 허용
+    quantity_ending = bool(
+        re.search(
+            r"(?:개|잔|세트)(?:요)?$",
+            compact,
+        )
+    )
+
+    if not explicit_request and not quantity_ending:
+        return update, warnings
+
+
+    menus = explicit_menu_values(
+        utterance
+    )
+
+    drinks = explicit_drink_values(
+        utterance
+    )
+
+    sides = explicit_side_values(
+        utterance
+    )
+
+
+    # --------------------------------------------------------
+    # 한 문장에 여러 품목 종류가 섞여 있으면
+    # V14 일반 경로에 맡긴다.
+    #
+    # 예:
+    #   불고기버거 2개랑 콜라 3잔
+    # --------------------------------------------------------
+
+    product_groups = sum([
+        bool(menus),
+        bool(drinks),
+        bool(sides),
+    ])
+
+    if product_groups != 1:
+        return update, warnings
+
+
+    item = {
+        "quantity": quantity,
+    }
+
+
+    # --------------------------------------------------------
+    # BURGER
+    # --------------------------------------------------------
+
+    if menus:
+
+        if len(menus) != 1:
+            return update, warnings
+
+        item["item_type"] = "burger"
+        item["menu"] = next(
+            iter(menus)
+        )
+
+        types = explicit_type_values(
+            utterance
+        )
+
+        if len(types) == 1:
+            item["type"] = next(
+                iter(types)
+            )
+
+
+    # --------------------------------------------------------
+    # DRINK
+    # --------------------------------------------------------
+
+    elif drinks:
+
+        if len(drinks) != 1:
+            return update, warnings
+
+        item["item_type"] = "drink"
+        item["drink"] = next(
+            iter(drinks)
+        )
+
+        sizes = explicit_size_values(
+            utterance
+        )
+
+        if len(sizes) == 1:
+            item["drink_size"] = next(
+                iter(sizes)
+            )
+
+
+    # --------------------------------------------------------
+    # SIDE
+    # --------------------------------------------------------
+
+    elif sides:
+
+        if len(sides) != 1:
+            return update, warnings
+
+        item["item_type"] = "side"
+        item["side"] = next(
+            iter(sides)
+        )
+
+
+    else:
+        return update, warnings
+
+
+    try:
+
+        repaired = OrderUpdate.model_validate({
+            "intent": "order",
+
+            "actions": [
+                {
+                    "operation": "add",
+                    "item": item,
+                }
+            ],
+        })
+
+    except Exception as e:
+
+        warnings.append(
+            "explicit quantity add 재검증 실패 -> "
+            f"LLM 출력 유지: {type(e).__name__}: {e}"
+        )
+
+        return update, warnings
+
+
+    warnings.append(
+        "explicit quantity deterministic 보정: "
+        f"item={item}"
+    )
+
+    return repaired, warnings
+
 
 
 # ============================================================
@@ -3118,6 +3378,20 @@ class DriveThruRuntime:
         self._last_llm_update = copy.deepcopy(llm_raw)
         repaired, warnings = repair_add_items(llm_raw)
         update = OrderUpdate.model_validate(repaired)
+
+        # ----------------------------------------------------
+        # 0-A. 명시적 단일 품목 대량 수량 보정
+        #      예: "치즈스틱 10개 주세요"
+        # ----------------------------------------------------
+        update, explicit_quantity_warnings = repair_explicit_quantity_add(
+            utterance,
+            before,
+            pending_before,
+            update,
+        )
+        warnings.extend(
+            explicit_quantity_warnings
+        )
 
         # ----------------------------------------------------
         # 1. 모바일 주문번호 deterministic verifier

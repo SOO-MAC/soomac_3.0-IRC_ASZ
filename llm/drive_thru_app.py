@@ -62,6 +62,7 @@ from ui_runtime_bridge import (
     ui_set_voice_mode,
     ui_set_order_items,
     ui_set_order_meta,
+    ui_request_staff_call,
 )
 
 
@@ -1723,6 +1724,61 @@ ASR_HALLUCINATION_PHRASES = (
 )
 
 
+
+# === ASZ STAFF CALL GUARD ===
+
+def is_staff_call_utterance(text):
+
+    compact = re.sub(
+        r"[\s!?.,~]+",
+        "",
+        str(text or "").lower(),
+    )
+
+    # 호출 취소 표현은 호출로 처리하지 않는다.
+    negative = (
+        "부르지마",
+        "부르지말",
+        "호출하지마",
+        "호출하지말",
+        "안불러",
+        "안불러도",
+    )
+
+    if any(
+        phrase in compact
+        for phrase in negative
+    ):
+        return False
+
+
+    has_target = any(
+        word in compact
+        for word in (
+            "직원",
+            "직원분",
+            "사람",
+        )
+    )
+
+    has_call = any(
+        word in compact
+        for word in (
+            "불러",
+            "불러줘",
+            "불러주세요",
+            "호출",
+            "와주세요",
+            "와줘",
+        )
+    )
+
+    return (
+        has_target
+        and has_call
+    )
+
+
 def has_order_domain_signal(
     text,
     *,
@@ -2470,6 +2526,148 @@ def main():
             continue
 
         # ====================================================
+        # EXACT FINISH GUARD
+        # ====================================================
+        #
+        # "끝낼게요"만 정확히 들어오면 주문 확정.
+        #
+        # "내일 끝낼게요"
+        # "과제 끝낼게요"
+        # 같은 STT 오인식/애매한 문장은
+        # LLM에 보내지 않고 현재 주문을 그대로 유지한다.
+        # ====================================================
+
+        finish_text = re.sub(
+            r"[\\s!?.,~]+",
+            "",
+            text,
+        )
+
+        if pending_mobile_order_id is None:
+
+            # ------------------------------------------------
+            # 정확히 "끝낼게요"만 말한 경우
+            # ------------------------------------------------
+
+            if finish_text == "끝낼게요":
+
+                finish_snapshot = (
+                    runtime_worker.snapshot()
+                )
+
+                finish_pending = (
+                    finish_snapshot.get(
+                        "pending"
+                    )
+                )
+
+                finish_state = (
+                    finish_snapshot.get(
+                        "state",
+                        {},
+                    )
+                )
+
+                # 옵션이 아직 덜 선택된 주문은 확정하지 않는다.
+                if finish_pending is not None:
+
+                    soomac_say(
+                        pending_message(
+                            finish_pending
+                        )
+                    )
+
+                    continue
+
+                # 주문 자체가 비어 있으면 확정하지 않는다.
+                if not finish_state.get(
+                    "items"
+                ):
+
+                    soomac_say(
+                        "주문하실 메뉴를 말씀해주세요."
+                    )
+
+                    continue
+
+                try:
+
+                    handoff = (
+                        handoff_manager
+                        .create_counter_handoff(
+                            finish_state
+                        )
+                    )
+
+                except OrderHandoffError as e:
+
+                    system_message(
+                        f"주문 확정 오류: {e}"
+                    )
+
+                    soomac_say(
+                        "주문 내용을 다시 확인해주세요."
+                    )
+
+                    continue
+
+                last_handoff = handoff
+
+                ui_set_order_meta(
+                    order_id=handoff.get(
+                        "order_id"
+                    ),
+                    mobile_order_id=None,
+                    total_price=handoff.get(
+                        "total_price"
+                    ),
+                    order_mode="counter",
+                )
+
+                show_counter_complete(
+                    handoff
+                )
+
+                soomac_say(
+                    f"주문이 완료되었습니다. "
+                    f"주문 금액은 "
+                    f"{handoff['total_price']:,}원입니다. "
+                    "앞으로 이동해주세요."
+                )
+
+                if debug_mode:
+
+                    show_debug_handoff(
+                        handoff
+                    )
+
+                session.finish_customer_order()
+
+                continue
+
+
+            # ------------------------------------------------
+            # "끝낼게요"가 들어갔지만 정확한 확정 발화가 아님
+            # ------------------------------------------------
+
+            if "끝낼게요" in finish_text:
+
+                if debug_mode:
+
+                    system_message(
+                        "[FINISH GUARD] "
+                        f"ambiguous finish rejected: {text}"
+                    )
+
+                soomac_say(
+                    "잘못 들었습니다. "
+                    "다시 말씀해주세요."
+                )
+
+                continue
+
+
+        # ====================================================
         # MOBILE PICKUP CONFIRMATION
         # ====================================================
         # mobile_pickup은 번호를 인식하자마자 handoff하지 않는다.
@@ -2559,6 +2757,30 @@ def main():
 
             # 긍정 응답이 아니면 번호 정정 가능성이 있으므로
             # 기존 번호를 확정하지 않고 아래 V14 Runtime으로 보낸다.
+
+        # ====================================================
+        # STAFF CALL
+        # ====================================================
+        # 직원 호출은 LLM을 거치지 않는다.
+        # 주문 State도 절대 변경하지 않는다.
+
+        if is_staff_call_utterance(
+            text
+        ):
+
+            ui_request_staff_call()
+
+            system_message(
+                "직원 호출 요청"
+            )
+
+            soomac_say(
+                "직원을 호출하겠습니다. "
+                "잠시만 기다려주세요."
+            )
+
+            continue
+
 
         # ====================================================
         # CUSTOMER INPUT GUARD

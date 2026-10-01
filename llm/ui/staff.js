@@ -103,12 +103,109 @@ function won(value) {
 
 function escapeHtml(value) {
 
-    return String(value ?? "")
+    return String(value != null ? value : "")
         .replaceAll("&", "&amp;")
         .replaceAll("<", "&lt;")
         .replaceAll(">", "&gt;")
         .replaceAll('"', "&quot;")
         .replaceAll("'", "&#039;");
+}
+
+
+
+
+/* =========================================================
+   ASZ UI SAME ITEM GROUPING
+   Runtime의 line_id는 유지하고 화면에서만 동일 품목을 ×N으로 묶는다.
+========================================================= */
+
+function groupOrderItems(items) {
+
+    const groups = new Map();
+
+
+    for (const original of items || []) {
+
+        const item = {
+            ...original,
+
+            exclude: [
+                ...(original.exclude || [])
+            ].sort(),
+
+            add_toppings: [
+                ...(original.add_toppings || [])
+            ].sort(),
+        };
+
+
+        /*
+           line_id와 quantity는 묶기 기준에서 제외.
+
+           아래 옵션이 전부 같은 경우에만 같은 상품으로 본다.
+        */
+        const key = JSON.stringify({
+
+            item_type:
+                item.item_type != null ? item.item_type : null,
+
+            menu:
+                item.menu != null ? item.menu : null,
+
+            type:
+                item.type != null ? item.type : null,
+
+            drink:
+                item.drink != null ? item.drink : null,
+
+            drink_size:
+                item.drink_size != null ? item.drink_size : null,
+
+            side:
+                item.side != null ? item.side : null,
+
+            exclude:
+                item.exclude,
+
+            add_toppings:
+                item.add_toppings,
+        });
+
+
+        const quantity =
+            Number(
+                item.quantity || 1
+            );
+
+
+        if (groups.has(key)) {
+
+            groups.get(key).quantity +=
+                quantity;
+
+            continue;
+        }
+
+
+        groups.set(
+            key,
+            {
+                ...item,
+
+                /*
+                   UI 표시용 대표 line.
+                   Runtime의 실제 line들은 변경하지 않는다.
+                */
+                quantity:
+                    quantity,
+            }
+        );
+    }
+
+
+    return Array.from(
+        groups.values()
+    );
 }
 
 
@@ -580,6 +677,32 @@ function renderStaff(state) {
 
 
     /* =====================================================
+       STAFF CALL ALERT
+    ===================================================== */
+
+    if (state.staff_call_requested) {
+
+        staffStatus.textContent =
+            "🚨 직원 호출 요청";
+
+        staffStatus.style.background =
+            "#ffe1e1";
+
+        staffStatus.style.color =
+            "#a92626";
+    }
+
+    else {
+
+        staffStatus.style.background =
+            "";
+
+        staffStatus.style.color =
+            "";
+    }
+
+
+    /* =====================================================
        ITEM COUNT
     ===================================================== */
 
@@ -656,7 +779,9 @@ function renderStaff(state) {
     orderList.innerHTML = "";
 
 
-    items.forEach(
+    groupOrderItems(
+        items
+    ).forEach(
         (
             item,
             index

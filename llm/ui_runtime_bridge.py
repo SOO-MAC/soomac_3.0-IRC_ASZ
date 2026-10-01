@@ -36,6 +36,7 @@ class CustomerUIStore:
         self.mobile_order_id = None
         self.total_price = None
         self.order_mode = None
+        self.staff_call_requested = False
 
 
     def _touch(self):
@@ -77,6 +78,9 @@ class CustomerUIStore:
 
                 "order_mode":
                     self.order_mode,
+
+                "staff_call_requested":
+                    self.staff_call_requested,
             }
 
 
@@ -98,6 +102,7 @@ class CustomerUIStore:
             self.mobile_order_id = None
             self.total_price = None
             self.order_mode = None
+            self.staff_call_requested = False
 
             self._touch()
 
@@ -193,6 +198,18 @@ class CustomerUIStore:
             self.order_mode = order_mode
 
             self._touch()
+
+
+    def request_staff_call(
+        self,
+    ):
+
+        with self.lock:
+
+            self.staff_call_requested = True
+
+            self._touch()
+
 
 
 STORE = CustomerUIStore()
@@ -396,3 +413,8 @@ def ui_set_order_meta(
         total_price=total_price,
         order_mode=order_mode,
     )
+
+
+def ui_request_staff_call():
+
+    STORE.request_staff_call()
