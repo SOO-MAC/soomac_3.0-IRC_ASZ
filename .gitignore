@@ -62,3 +62,11 @@ venv/
 
 # ── LLM runtime data ──
 llm/runtime_data/
+# ROS2 / colcon
+build/
+install/
+log/
+
+# Python generated files
+__pycache__/
+*.py[cod]
