@@ -103,10 +103,18 @@ def parse_say_payload(raw: str) -> dict | None:
 
 
 class TTSNode(Node):
-    def __init__(self):
-        super().__init__("tts_node")
+    """
+    node_name / defaults / precache_phrases 를 바꿔서 다른 용도로 재사용할 수 있다.
+    (deliver_tts_node.py 가 이 방식으로 결제·전달 안내용 노드를 만든다)
+    defaults 는 파라미터 기본값만 바꾼다. --ros-args -p 로 넘긴 값이 항상 우선이다.
+    """
 
-        P = self.declare_parameter
+    def __init__(self, node_name: str = "tts_node", *, defaults: dict | None = None,
+                 precache_phrases=PRECACHE_PHRASES):
+        super().__init__(node_name)
+
+        defaults = defaults or {}
+        P = lambda name, value: self.declare_parameter(name, defaults.get(name, value))  # noqa: E731
         P("say_topic", TTS_TOPIC)
         P("stop_topic", TTS_STOP_TOPIC)
         P("status_topic", TTS_STATUS_TOPIC)
@@ -144,6 +152,7 @@ class TTSNode(Node):
         reliability = (ReliabilityPolicy.BEST_EFFORT
                        if str(g("say_reliability")).lower() == "best_effort"
                        else ReliabilityPolicy.RELIABLE)
+        self._say_reliable = reliability == ReliabilityPolicy.RELIABLE
         say_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=20,
                              reliability=reliability, durability=DurabilityPolicy.VOLATILE)
         self.subscription = self.create_subscription(
@@ -158,6 +167,16 @@ class TTSNode(Node):
         self._print_rx = bool(g("print_rx"))
         self._rx_count = 0
         self.get_logger().info(f"{g('say_topic')} 구독 시작 (모델 로딩 중 들어온 발화는 준비 후 재생)")
+
+        # 다른 PC 의 퍼블리셔와 붙지 않을 때 가장 먼저 볼 값들. 양쪽 PC·모든 터미널이 같아야 한다.
+        print(
+            "[ROS ENV] "
+            f"ROS_DOMAIN_ID={os.environ.get('ROS_DOMAIN_ID', '(미설정=0)')}  "
+            f"ROS_LOCALHOST_ONLY={os.environ.get('ROS_LOCALHOST_ONLY', '(미설정=0)')}  "
+            f"RMW={os.environ.get('RMW_IMPLEMENTATION', '(기본)')}  "
+            f"node={self.get_fully_qualified_name()}",
+            flush=True,
+        )
 
         # ---- 엔진 / 출력 / 캐시
         engine_kind = g("engine")
@@ -190,7 +209,7 @@ class TTSNode(Node):
         )
 
         if g("precache"):
-            self.pipeline.precache(PRECACHE_PHRASES)
+            self.pipeline.precache(precache_phrases)
 
 
         self._ids = itertools.count(1)
@@ -202,12 +221,17 @@ class TTSNode(Node):
             "say_topic": g("say_topic"),
             "pid": os.getpid(),
         }
+        # /tts/text 퍼블리셔 수가 바뀔 때마다 출력한다. 0 이면 LLM 쪽과 연결이 안 된 것.
+        self._last_pub_count = None
+        self._watch_publishers()
+        self.create_timer(1.0, self._watch_publishers)
+
         hb = float(g("heartbeat_s"))
         if hb > 0:
             self.create_timer(hb, self._heartbeat)
 
         self._publish_event({"event": "ready", "t": time.monotonic(), **self._ready_info})
-        self.get_logger().info(f"TTS Node READY - {g('say_topic')} 구독 중 (상태 {g('status_topic')})")
+        self.get_logger().info(f"{node_name} READY - {g('say_topic')} 구독 중 (상태 {g('status_topic')})")
 
     # --------------------------------------------------------
     def _publish_event(self, ev: dict) -> None:
@@ -224,6 +248,47 @@ class TTSNode(Node):
         if ev["event"] in ("started", "done", "stopped", "error"):
             detail = {k: v for k, v in ev.items() if k not in ("event", "t", "stamp", "expected_end_stamp")}
             self.get_logger().info(f"{ev['event']} {detail}")
+
+    def _watch_publishers(self) -> None:
+        """
+        /tts/text 에 붙은 퍼블리셔를 1초마다 확인하고, 바뀔 때만 출력한다.
+        같은 이름의 토픽 하나에 LLM 퍼블리셔(PUBLISHER)와 이 노드(SUBSCRIPTION)가 함께 붙는다.
+        여기서는 PUBLISHER 쪽만 보므로, 이 노드 자신은 섞이지 않는다.
+        """
+        try:
+            infos = self.get_publishers_info_by_topic(self._say_topic)
+        except Exception:
+            infos = None
+
+        if infos is None:
+            count = self.count_publishers(self._say_topic)
+            names = []
+        else:
+            count = len(infos)
+            names = []
+            for info in infos:
+                ns = info.node_namespace.rstrip("/")
+                name = f"{ns}/{info.node_name}" if info.node_name else "(이름 없음)"
+                reliability = getattr(info.qos_profile.reliability, "name", str(info.qos_profile.reliability))
+                names.append((name, reliability))
+
+        signature = (count, tuple(names))
+        if signature == self._last_pub_count:
+            return
+        self._last_pub_count = signature
+
+        if count == 0:
+            print(f"[PUB] {self._say_topic}: 퍼블리셔 0개 "
+                  "(보내는 노드가 안 떠 있거나 네트워크·ROS_DOMAIN_ID 가 다름)", flush=True)
+            return
+
+        print(f"[PUB] {self._say_topic}: 퍼블리셔 {count}개 연결", flush=True)
+        for name, reliability in names:
+            warn = ""
+            if self._say_reliable and "BEST_EFFORT" in reliability.upper():
+                warn = ("  ← QoS 불일치: 퍼블리셔가 BEST_EFFORT 라 메시지가 안 온다. "
+                        "-p say_reliability:=best_effort 로 실행할 것")
+            print(f"       - {name}  (Reliability: {reliability}){warn}", flush=True)
 
     def _heartbeat(self) -> None:
         self._publish_event({"event": "heartbeat", "t": time.monotonic(),
