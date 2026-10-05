@@ -1,0 +1,9 @@
+string command
+string object_type
+float64 x_mm
+float64 y_mm
+float64 z_mm
+---
+bool success
+string code
+string message

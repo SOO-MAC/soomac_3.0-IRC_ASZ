@@ -1,0 +1,23 @@
+/**:
+  ros__parameters:
+    # ------------------------------------------------------------
+    # Detection2 / driver pose lock
+    # Values copied from the previously verified coordinator policy.
+    # ------------------------------------------------------------
+    driver_window: 5
+    driver_min_samples: 3
+    driver_inlier_radius_mm: 150.0
+    driver_max_spread_mm: 120.0
+
+    # ------------------------------------------------------------
+    # Detection1 / item lock
+    # ------------------------------------------------------------
+    item_window: 5
+    item_min_samples: 3
+    item_max_spread_mm: 35.0
+    item_min_confidence: 0.50
+
+    # 0.0 = wait indefinitely for continuously-published Detection1.
+    item_wait_timeout_sec: 0.0
+
+    done_service_wait_sec: 5.0
