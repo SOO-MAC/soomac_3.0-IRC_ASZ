@@ -697,11 +697,21 @@ class ArmControlNode(DriveThruControlNode):
                 ).copy()
 
             # ------------------------------------------------------
-            # DO NOT CHANGE THIS ORDER.
-            # Same high-level delivery order:
+            # Payment ends away from START.
+            # PICK implementations require START pose, so return
+            # home before beginning the existing delivery sequence.
+            #
+            # Existing object motion remains unchanged:
             #   PICK -> HANDOFF -> RETURN_HOME
-            # All detailed per-object paths remain in frozen code.
             # ------------------------------------------------------
+            self.run_legacy_command(
+                "RETURN_HOME",
+                "",
+                0.0,
+                0.0,
+                0.0,
+            )
+
             self.run_legacy_command(
                 "PICK",
                 item["object_type"],
