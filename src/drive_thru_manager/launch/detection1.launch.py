@@ -25,8 +25,7 @@ def generate_launch_description():
         parameters=[
             {
                 "weights_path": weights,
-                "serial_no": "048522072487",
-                "device": "cpu",
+                "device": "0",
             }
         ],
     )

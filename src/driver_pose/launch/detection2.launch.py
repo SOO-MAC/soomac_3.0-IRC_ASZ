@@ -25,7 +25,6 @@ def generate_launch_description():
             parameters=[
                 {
                     "weights": weights,
-                    "serial_no": "048522073427",
                 }
             ],
         ),
