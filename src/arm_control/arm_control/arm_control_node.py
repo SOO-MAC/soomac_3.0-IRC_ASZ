@@ -48,7 +48,7 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from soomac_interfaces.msg import DetectedItem
-from soomac_interfaces.srv import ArmCommand
+from soomac_interfaces.srv import ArmCommand, MoveTickPath
 
 from arm_control.motion_logic_immutable import DriveThruControlNode
 _STUDY_ARM = str(
@@ -202,6 +202,57 @@ class ArmControlNode(DriveThruControlNode):
         self.get_logger().info(
             "Motion implementation is inherited unchanged from "
             "motion_logic_immutable.py"
+        )
+
+    # ------------------------------------------------------------------
+    # Embedded Runner service wait
+    #
+    # The inherited motion code used spin_until_future_complete(self.runner),
+    # but runner is now a proxy owned by this already-spinning ROS node.
+    # Keep the exact MoveTickPath request/path behavior and only replace
+    # the Future waiting plumbing.
+    # ------------------------------------------------------------------
+
+    def move_path(
+        self,
+        label,
+        ticks_list,
+        profile_velocity=0,
+    ):
+        arr = np.asarray(
+            ticks_list,
+            dtype=np.int64,
+        ).reshape(-1, 5)
+
+        req = MoveTickPath.Request()
+        req.joint_ticks = [
+            int(v)
+            for v in arr.reshape(-1)
+        ]
+        req.point_count = int(len(arr))
+        req.label = str(label)
+        req.profile_velocity = int(profile_velocity)
+        req.timeout_sec = float(
+            self.core.PATH_TIMEOUT_SEC
+        )
+
+        future = self.runner.path.call_async(req)
+
+        # Parent /arm_control is already running inside
+        # MultiThreadedExecutor. Do NOT spin it again here.
+        self.runner._wait_future(future)
+
+        res = future.result()
+
+        if res is None or not res.success:
+            raise RuntimeError(
+                f"{label} failed: "
+                f"{getattr(res, 'message', 'no response')}"
+            )
+
+        self.get_logger().info(
+            f"{label} reached | "
+            f"ticks={list(res.reached_ticks)}"
         )
 
     # ------------------------------------------------------------------
