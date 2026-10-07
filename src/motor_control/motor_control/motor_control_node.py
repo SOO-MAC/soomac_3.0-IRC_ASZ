@@ -42,9 +42,9 @@ HANDOFF_TURN_PROFILE_VELOCITY = 20
 #
 # Tool-down constraint / waypoint / stream timing은 그대로 두고
 # Profile Velocity만 올린다.
-PAYMENT_TOOLDOWN_START_PROFILE_VELOCITY = 16
-PAYMENT_TOOLDOWN_TURN_PROFILE_VELOCITY = 24
-PAYMENT_TOOLDOWN_APPROACH_PROFILE_VELOCITY = 16
+PAYMENT_TOOLDOWN_START_PROFILE_VELOCITY = 24
+PAYMENT_TOOLDOWN_TURN_PROFILE_VELOCITY = 40
+PAYMENT_TOOLDOWN_APPROACH_PROFILE_VELOCITY = 24
 
 
 def signed_int32(value: int) -> int:
@@ -1729,6 +1729,7 @@ class MotorControlNode(Node):
                 if (
                     "TURN"
                     in label_text.upper()
+                    and not label_text.startswith("payment/")
                 ):
                     velocity = max(
                         int(velocity),
@@ -1757,7 +1758,10 @@ class MotorControlNode(Node):
 
                 elif (
                     label_text
-                    == "payment/TOOLDOWN_TURN"
+                    in (
+                        "payment/TOOLDOWN_TURN",
+                        "payment/TOOLDOWN_TURN_APPROACH",
+                    )
                 ):
                     velocity = max(
                         int(velocity),
@@ -1793,6 +1797,7 @@ class MotorControlNode(Node):
                     in (
                         "payment/TOOLDOWN_TURN",
                         "payment/TOOLDOWN_APPROACH",
+                        "payment/TOOLDOWN_TURN_APPROACH",
                     )
                 )
 

@@ -526,6 +526,44 @@ def build_payment_plan(
                     seed_q,
                 )
 
+                # --------------------------------------------------
+                # Keep PAYMENT J1 on one numeric branch.
+                #
+                # At exactly the rear direction atan2 may alternate
+                # between +180 and -180 deg.  They are physically the
+                # same direction, but converting both branches to
+                # Dynamixel ticks creates a huge artificial J1 jump.
+                #
+                # Freeze J1 to the already-validated TURN direction.
+                # --------------------------------------------------
+                p["q"] = np.asarray(
+                    p["q"],
+                    dtype=float,
+                ).copy()
+
+                p["q"][0] = float(
+                    turn_q[0]
+                )
+
+                p["q"][4] = (
+                    PAYMENT_J5_DEG
+                )
+
+                p["ticks"] = np.asarray(
+                    core.cfg.model_deg_to_ticks(
+                        p["q"]
+                    ),
+                    dtype=np.int64,
+                )
+
+                p["ticks"][4] = (
+                    PAYMENT_J5_TICK
+                )
+
+                core.cfg.validate_arm_ticks(
+                    p["ticks"]
+                )
+
                 candidate_points.append(
                     p
                 )

@@ -1744,8 +1744,8 @@ class DriveThruControlNode(Node):
 
         START
           -> TOOL_DOWN_START
-          -> driver-direction TURN
-          -> TOOL-DOWN APPROACH
+          -> driver-direction TURN + TOOL-DOWN APPROACH
+             (one continuous MoveTickPath)
 
         Payment planner policy:
           target standoff = 300 mm
@@ -1803,24 +1803,23 @@ class DriveThruControlNode(Node):
         )
 
         # After this point tool-down must be preserved.
-        self.runner.move(
-            "payment/TOOLDOWN_TURN",
-            [
-                plan[
-                    "TURN"
-                ][
-                    "ticks"
-                ],
-            ],
+        #
+        # TURN + APPROACH are intentionally sent as ONE
+        # MoveTickPath request.  This prevents an unnecessary
+        # settle/restart between the driver-direction turn and
+        # the final payment approach.
+        turn_approach_path = [
+            plan["TURN"]["ticks"],
+        ]
+
+        turn_approach_path.extend(
+            p["ticks"]
+            for p in plan["APPROACH"]
         )
 
         self.runner.move(
-            "payment/TOOLDOWN_APPROACH",
-            [
-                p["ticks"]
-                for p
-                in plan["APPROACH"]
-            ],
+            "payment/TOOLDOWN_TURN_APPROACH",
+            turn_approach_path,
         )
 
 
