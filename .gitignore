@@ -81,3 +81,7 @@ log/
 # Python generated files
 __pycache__/
 *.py[cod]
+
+# 로컬 전용 테스트 및 설명서
+/src/arm_control/test/
+/src/arm_control/STRUCTURE.md
