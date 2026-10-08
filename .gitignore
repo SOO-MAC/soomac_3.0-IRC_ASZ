@@ -45,6 +45,17 @@ wandb/
 # ── 파이썬 ──
 __pycache__/
 *.py[cod]
+
+# 구조 정리 검증용 분리 빌드·설치 산출물
+/build_refactored/
+/install_refactored/
+/log_refactored/
+*.egg-info/
+
+# 운용에 필요한 비전 모델 두 개는 버전 관리
+!src/drive_thru_detection/models/
+!src/drive_thru_detection/models/paper_bag_best.pt
+!src/drive_thru_detection/models/yolo11m-pose.pt
 venv/
 .venv/
 *_venv/

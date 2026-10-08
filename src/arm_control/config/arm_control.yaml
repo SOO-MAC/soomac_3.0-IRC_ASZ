@@ -21,3 +21,6 @@
     item_wait_timeout_sec: 0.0
 
     done_service_wait_sec: 5.0
+
+    handoff_open_delay_sec: 5.0
+    paper_bag_y_offset_mm: 25.0

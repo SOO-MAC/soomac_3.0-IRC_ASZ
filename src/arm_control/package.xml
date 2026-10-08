@@ -2,13 +2,16 @@
 <package format="3">
   <name>arm_control</name>
   <version>0.1.0</version>
-  <description>IRC drive-thru high-level arm coordinator and immutable motion logic.</description>
+  <description>IRC drive-thru high-level arm coordinator and integrated motion planning.</description>
   <maintainer email="todo@todo.com">IRC</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
 
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
@@ -18,7 +21,7 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>vision_msgs</exec_depend>
   <exec_depend>soomac_interfaces</exec_depend>
-  <exec_depend>control_config</exec_depend>
+  <exec_depend>drive_thru_detection</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>

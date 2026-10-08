@@ -1,0 +1,331 @@
+# Task motion and camera settings; original values retained.
+arm_kinematics:
+  SIDE_MOVE_MM: 100.0
+  APPROACH_MM: 50.0
+  PICK_XYZ_MM:
+  - 200.0
+  - 0.0
+  - 120.0
+  TARGET_YAW_DEG: 0.0
+  POSITION_TOLERANCE_MM: 2.0
+  TOOL_TOLERANCE_DEG: 5.0
+  YAW_TOLERANCE_DEG: 5.0
+bag_geometry:
+  AXIAL_OFFSET_MM: 136.0
+  J5_DEG: 90.0
+  J5_TICK: 3072
+  GRIPPER_OPEN_TICK: 85
+  GRIPPER_HOLD_TICK: 2048
+  PULL_MM: 100.0
+  TURN_J1_DEG: -180.0
+  EXTEND_RADIUS_MM: 400.0
+  EXTEND_SEGMENTS: 12
+  LINK2_MM: 250.0
+  LINK3_MM: 250.0
+  TOOL_AXIAL_MM: 265.0
+  J4_SOFT_MAX_TICK: 3430
+  START_TOL_TICKS:
+  - 80
+  - 120
+  - 180
+  - 120
+  - 60
+  PATH_SERVICE: /motor/move_tick_path
+  OPEN_SERVICE: /motor/cup_gripper_open
+  CLOSE_SERVICE: /motor/bag_gripper_hold
+  PATH_TIMEOUT_SEC: 60.0
+handoff_reference:
+  SPEC:
+    name: smallbag
+    width_mm: 127.0
+    depth_mm: 81.0
+    height_mm: 232.0
+    x_mm: 170.0
+    y_mm: -150.0
+    ready_z_mm: 202.0
+    ready_tilt_deg: 70.0
+    grasp_z_mm: 102.0
+    grasp_tilt_deg: 90.0
+    lift_z_mm: 170.0
+    lift_tilt_deg: 90.0
+paper_bag_reference:
+  SPEC:
+    name: paper_bag
+    width_mm: 150.0
+    depth_mm: 89.0
+    height_mm: 170.0
+    x_mm: 240.0
+    y_mm: -90.0
+    ready_z_mm: 140.0
+    ready_tilt_deg: 70.0
+    grasp_z_mm: 40.0
+    grasp_tilt_deg: 90.0
+    lift_z_mm: 78.0
+    lift_tilt_deg: 90.0
+  PICK_MIN_RADIUS_MM: 220.0
+  PICK_MAX_RADIUS_MM: 400.0
+handoff:
+  SPEC:
+    name: smallbag_pose
+    width_mm: 127.0
+    depth_mm: 81.0
+    height_mm: 232.0
+    x_mm: 170.0
+    y_mm: -150.0
+    ready_z_mm: 202.0
+    ready_tilt_deg: 70.0
+    grasp_z_mm: 102.0
+    grasp_tilt_deg: 90.0
+    lift_z_mm: 170.0
+    lift_tilt_deg: 90.0
+  POSE_TOPIC: /driver_pose/target_base
+  POSE_WINDOW: 5
+  POSE_MIN_SAMPLES: 3
+  POSE_TIMEOUT_SEC: 10.0
+  STANDOFF_MM: 300.0
+  MIN_HANDOFF_RADIUS_MM: 300.0
+  EXECUTION_VALIDATED_MAX_MM: 400.0
+  MAX_REAR_DEVIATION_DEG: 45.0
+  MAX_POSE_XY_SPREAD_MM: 120.0
+fullik_handoff:
+  EXEC_MAX_RADIUS_MM: 400.0
+  STANDOFF_MM: 300.0
+  HANDOFF_SEGMENTS: 16
+paper_bag_pick:
+  R_CAM_TO_ARM:
+  - - 0.99954869
+    - -0.02825663
+    - 0.01019687
+  - - -0.0236476
+    - -0.53079331
+    - 0.84717133
+  - - -0.01852578
+    - -0.84703012
+    - -0.53122196
+  T_CAM_TO_ARM_MM:
+  - 293.40638902
+  - -602.84060821
+  - 399.16724562
+  TABLE_Z_MM: 0.0
+  DETECTION_TOPIC: /paper_bag/detections
+  CAMERA_INFO_TOPIC: /paper_bag/camera_info
+  VISION_CLASS: paper_bag
+  MIN_CONFIDENCE: 0.55
+  BAG_WINDOW: 5
+  BAG_MIN_SAMPLES: 3
+  BAG_TIMEOUT_SEC: 10.0
+  MAX_BAG_XY_SPREAD_MM: 35.0
+  USE_LONG_AXIS_BOTTOM_ESTIMATE: true
+  PULL_MM: 100.0
+  TCP_ERROR_MAX_MM: 1.0
+  J3_MIN_TICK: 0
+  J3_MAX_TICK: 10606
+  J4_MIN_TICK: 700
+  J4_MAX_TICK: 3500
+  PICK_J5_DEG: 0.0
+  PICK_J5_TICK: 2048
+handled_bag_reference:
+  PATH_SERVICE: /motor/move_tick_path
+  OPEN_SERVICE: /motor/cup_gripper_open
+  CLOSE_SERVICE: /motor/bag_gripper_hold
+  BAG_X_MM: 170.0
+  BAG_Y_MM: -150.0
+  BAG_HEIGHT_MM: 282.0
+  BAG_WIDTH_MM: 150.0
+  BAG_DEPTH_MM: 89.0
+  PICK_AXIAL_OFFSET_MM: 136.0
+  CARRY_AXIAL_OFFSET_MM: 0.0
+  J5_DEG: 90.0
+  GRIPPER_OPEN_TICK: 85
+  GRIPPER_CLOSE_TICK: 2048
+  PREP_TILT_DEG: 50.0
+  PICK_TILT_DEG: 90.0
+  GRASP_DEPTH_MM: 80.0
+  GRASP_Z_MM: 202.0
+  READY_Z_MM: 252.0
+  PREP_RADIUS_MM: 250.0
+  PREP_Z_MM: 320.0
+  LIFT_Z_MM: 220.0
+  CARRY_RADIUS_MM: 300.0
+  CARRY_Z_MM: 300.0
+  FINAL_RADII_MM:
+  - 350.0
+  - 375.0
+  - 400.0
+  NORMAL_VELOCITY: 8
+  TURN_VELOCITY: 15
+  START_TOL:
+  - 80
+  - 120
+  - 180
+  - 120
+  - 60
+handled_bag_horizontal:
+  BODY_HEIGHT_MM: 252.0
+  HANDLE_GRASP_EXTRA_MM: 30.0
+  LIFT_MM: 50.0
+  APPROACH_MM: 120.0
+  INSERT_EXTRA_MM: 50.0
+  TCP_OFFSET_MM: 136.0
+  HORIZONTAL_TILT_DEG: 0.0
+  HORIZONTAL_J5_DEG: 0.0
+  HORIZONTAL_J5_TICK: 2048
+  APPROACH_SEGMENTS: 12
+  LIFT_SEGMENTS: 8
+  HANDOFF_SEGMENTS: 24
+  MAX_HANDOFF_RADIUS_MM: 400.0
+cup_geometry:
+  CUP_GRASP_Z_MM: 105.0
+  CUP_LIFT_Z_MM: 185.0
+  CUP_SAFE_Z_MM: 300.0
+  APPROACH_OFFSET_MM: 120.0
+  PULL_MM: 100.0
+  CUP_TCP_OFFSET_MM: 101.0
+  CUP_J5_DEG: 0.0
+  CUP_J5_TICK: 2048
+  CUP_TILT_DEG: 0.0
+  TCP_ERROR_MAX_MM: 1.0
+  REFERENCE_X_MM: 80.0
+  REFERENCE_Y_MM: 500.0
+  REFERENCE:
+    SAFE:
+    - 2871
+    - 798
+    - 8328
+    - 1975
+    - 2048
+    D120_Z105:
+    - 2871
+    - 2237
+    - 10132
+    - 1326
+    - 2048
+    GRASP:
+    - 2871
+    - 3472
+    - 8416
+    - 1422
+    - 2048
+    LIFT:
+    - 2871
+    - 2796
+    - 8047
+    - 1632
+    - 2048
+    PULL100:
+    - 2871
+    - 1506
+    - 9384
+    - 1622
+    - 2048
+cup_pick:
+  APPROACH_CANDIDATES_MM:
+  - 120.0
+  - 110.0
+  - 100.0
+  - 90.0
+  - 80.0
+  - 70.0
+  - 60.0
+  - 50.0
+  - 40.0
+  DESCEND_Z_MM:
+  - 280.0
+  - 260.0
+  - 240.0
+  - 220.0
+  - 200.0
+  - 180.0
+  - 160.0
+  - 140.0
+  - 135.0
+  - 125.0
+  - 115.0
+  - 105.0
+  LIFT_Z_MM:
+  - 125.0
+  - 145.0
+  - 165.0
+  - 185.0
+  PULL_D_MM:
+  - 20.0
+  - 40.0
+  - 60.0
+  - 80.0
+  - 100.0
+  CUP_INSERT_EXTRA_MM: 60.0
+  CUP_INSERT_RETURN_D_MM:
+  - -40.0
+  - -20.0
+  - 0.0
+  EXTRA_PULL_D_MM:
+  - 120.0
+  - 140.0
+  - 160.0
+  - 180.0
+  - 200.0
+  SOFT_J3_MARGIN_TICK: 200
+  SOFT_J4_MARGIN_TICK: 200
+cup_handoff:
+  CUP_PULL100_TICKS:
+  - 2871
+  - 1506
+  - 9384
+  - 1622
+  - 2048
+  CUP_J5_TICK: 2048
+  CUP_J5_DEG: 0.0
+  HANDOFF_SEGMENTS: 16
+  MAX_HANDOFF_RADIUS_MM: 600.0
+  CUP_TILT_DEG: 0.0
+payment:
+  STANDOFF_MM: 300.0
+  MAX_PAYMENT_RADIUS_MM: 400.0
+  PAYMENT_Z_MM: 100.0
+  PAYMENT_J4_MAX_TICK: 3500
+  MIN_PAYMENT_RADIUS_MM: 300.0
+  PAYMENT_RADIUS_STEP_MM: 5.0
+  PAYMENT_TILT_DEG: 90.0
+  PAYMENT_J5_DEG: 0.0
+  PAYMENT_J5_TICK: 2048
+  PAYMENT_SEGMENTS: 24
+  TOOLDOWN_TARGET_SUM_DEG: 180.0
+  TOOLDOWN_TOL_DEG: 0.2
+  TCP_ERROR_LIMIT_MM: 1.0
+detection1:
+  DETECTION_TOPIC: /paper_bag/detections
+  CAMERA_INFO_TOPIC: /paper_bag/camera_info
+  OUTPUT_TOPIC: /drive_thru/detected_item
+  VALID_OBJECT_TYPES:
+  - L_paper_bag
+  - cup
+  - paper_bag
+  R_CAM_TO_ARM:
+  - - 0.99954869
+    - -0.02825663
+    - 0.01019687
+  - - -0.0236476
+    - -0.53079331
+    - 0.84717133
+  - - -0.01852578
+    - -0.84703012
+    - -0.53122196
+  T_CAM_TO_ARM_MM:
+  - 293.40638902
+  - -602.84060821
+  - 399.16724562
+  TABLE_Z_MM: 0.0
+  PAPER_BAG_HEIGHT_MM: 170.0
+  L_PAPER_BAG_HEIGHT_MM: 252.0
+  CUP_SUPPORT_Z_MM: 90.0
+  CUP_HEIGHT_MM: 140.0
+arm_control.do_pick_l_paper_bag:
+  INSERT_EXTRA_MM: 50.0
+  APPROACH_MM: 120.0
+  GRASP_Z_MM: 282.0
+  LIFT_Z_MM: 332.0
+  SAFE_Z_MM: 380.0
+  PULL_MM: 150.0
+detection2:
+  X_OFFSET_M: 0.087
+  Z_OFFSET_M: 0.0185
