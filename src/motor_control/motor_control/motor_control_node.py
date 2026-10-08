@@ -17,7 +17,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Int32, Int32MultiArray
 from std_srvs.srv import Trigger
-from soomac_interfaces.srv import ExecutePickPlace, MoveToTicks, MoveTickPath
+from arm_control.srv import ExecutePickPlace, MoveToTicks, MoveTickPath
 from arm_control.robot_config import *
 
 # Drive-through cup gripper positions

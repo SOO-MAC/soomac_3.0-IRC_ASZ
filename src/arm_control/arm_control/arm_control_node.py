@@ -23,7 +23,7 @@ from sensor_msgs.msg import CameraInfo
 from vision_msgs.msg import Detection2DArray
 from std_msgs.msg import String
 from std_srvs.srv import SetBool, Trigger
-from soomac_interfaces.srv import ArmCommand, MoveTickPath
+from arm_control.srv import ArmCommand, MoveTickPath
 from arm_control import robot_config
 from arm_control.robot_config import load_config
 
@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from rclpy.callback_groups import ReentrantCallbackGroup
 from collections import deque
 from std_msgs.msg import Int32MultiArray
-from soomac_interfaces.srv import MoveTickPath
+from arm_control.srv import MoveTickPath
 
 
 @dataclass(frozen=True)
