@@ -709,10 +709,22 @@ def wait_cup_level_reached(
             - float(level_target_deg)
         )
 
+        cup_position_thresholds = (
+            ARM_POSITION_THRESHOLDS.copy()
+        )
+
+        # CUP handoff TURN:
+        # J1 has small steady-state/backlash residual.
+        # Keep every other joint threshold unchanged.
+        cup_position_thresholds[0] = max(
+            int(cup_position_thresholds[0]),
+            30,
+        )
+
         position_ok = bool(
             np.all(
                 np.abs(errors)
-                <= ARM_POSITION_THRESHOLDS
+                <= cup_position_thresholds
             )
         )
 

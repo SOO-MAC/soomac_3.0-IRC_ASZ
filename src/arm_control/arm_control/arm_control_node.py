@@ -90,6 +90,25 @@ class ArmControlNode(DriveThruControlNode):
         # This initializes the exact existing high-level arm motion code.
         super().__init__()
 
+        # Final handoff only:
+        # reach/turn to the customer -> wait 5 sec -> open gripper.
+        # Initial OPEN / PICK CLOSE are unchanged.
+        _original_runner_trigger = self.runner.trigger
+
+        def _trigger_with_handoff_delay(client, label):
+            if str(label).endswith("/OPEN_HANDOVER"):
+                self.get_logger().info(
+                    f"{label} | waiting 5.0 sec before gripper OPEN"
+                )
+                time.sleep(5.0)
+
+            return _original_runner_trigger(
+                client,
+                label,
+            )
+
+        self.runner.trigger = _trigger_with_handoff_delay
+
         # ---------------- new communication parameters ----------------
         self.declare_parameter("driver_window", 5)
         self.declare_parameter("driver_min_samples", 3)
@@ -212,6 +231,39 @@ class ArmControlNode(DriveThruControlNode):
     # Keep the exact MoveTickPath request/path behavior and only replace
     # the Future waiting plumbing.
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # paper_bag pickup calibration
+    #
+    # Detection1 base coordinate:
+    #   +Y = left
+    #
+    # Only paper_bag PICK is shifted 25 mm to the left.
+    # L_paper_bag / cup / Detection1 transform remain unchanged.
+    # ------------------------------------------------------------------
+
+    def do_pick_paper_bag(
+        self,
+        x_mm,
+        y_mm,
+    ):
+        detected_x = float(x_mm)
+        detected_y = float(y_mm)
+
+        pick_x = detected_x
+        pick_y = detected_y + 25.0
+
+        self.get_logger().info(
+            "paper_bag PICK offset | "
+            f"detected=({detected_x:+.1f},{detected_y:+.1f}) -> "
+            f"command=({pick_x:+.1f},{pick_y:+.1f}) | "
+            "Y_OFFSET=+25.0 mm"
+        )
+
+        return super().do_pick_paper_bag(
+            pick_x,
+            pick_y,
+        )
 
     def move_path(
         self,
