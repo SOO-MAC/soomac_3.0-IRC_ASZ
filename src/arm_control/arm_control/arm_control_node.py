@@ -3048,7 +3048,6 @@ class ArmControlNode(Node):
             )
         except TypeError:
             motion = self.build_fullik_path(self.active_pick["handoff_plan"], handoff)
-        self.runner.move("paper_bag/FULLIK_TURN", [motion["turn_ticks"]])
         held_j5_tick = int(self.active_pick["pick_plan"]["PULL100"]["ticks"][4])
         held_j5_deg = float(self.active_pick["pick_plan"]["PULL100"]["q"][4])
         motion["turn_ticks"][4] = held_j5_tick
@@ -3060,6 +3059,7 @@ class ArmControlNode(Node):
                 point["q"][4] = held_j5_deg
             self.core.cfg.validate_arm_ticks(point["ticks"])
         self.core.cfg.validate_arm_ticks(motion["turn_ticks"])
+        self.runner.move("paper_bag/FULLIK_TURN", [motion["turn_ticks"]])
         self.move_path(
             "paper_bag/FULLIK_HANDOFF_SMOOTH",
             [point["ticks"] for point in motion["points"]],

@@ -572,6 +572,7 @@ def set_stream_tracking_profile_velocity(
     port: PortHandler,
     packet: PacketHandler,
     velocity: int,
+    compensate_reduction: bool = False,
 ) -> None:
     """
     Continuous streamed path 전용 tracking profile.
@@ -590,8 +591,8 @@ def set_stream_tracking_profile_velocity(
 
     values = [
         tracking,  # J1
-        tracking,  # J2
-        tracking,  # J3
+        max(1, int(round(tracking * J2_PROFILE_VELOCITY_SCALE))) if compensate_reduction else tracking,
+        max(1, int(round(tracking * J3_PROFILE_VELOCITY_SCALE))) if compensate_reduction else tracking,
         tracking,  # J4
         base,      # J5
     ]
@@ -1813,6 +1814,8 @@ class MotorControlNode(Node):
                     )
                 )
 
+                bag_tooldown_motion = label_text == "paper_bag/FULLIK_HANDOFF_SMOOTH"
+
                 if cup_level_motion or payment_tooldown_motion:
 
                     # CUP:
@@ -1845,6 +1848,7 @@ class MotorControlNode(Node):
                             self.port,
                             self.packet,
                             velocity,
+                            compensate_reduction=bag_tooldown_motion,
                         )
                     else:
                         set_arm_profile_velocity(
@@ -1940,7 +1944,7 @@ class MotorControlNode(Node):
                 #   J5 = 2048
                 # --------------------------------------------------
 
-                if payment_tooldown_motion:
+                if payment_tooldown_motion or bag_tooldown_motion:
 
                     for (
                         command_index,
@@ -1967,16 +1971,18 @@ class MotorControlNode(Node):
 
                         if tool_error_deg > 5.0:
                             raise ValueError(
-                                "PAYMENT tool-down violation | "
+                                "Tool-down violation | "
                                 f"label={label_text} | "
                                 f"command={command_index} | "
                                 f"sum234={tool_sum_deg:.3f} deg | "
                                 f"error={tool_error_deg:.3f} deg"
                             )
 
-                        if int(command[4]) != 2048:
+                        held_j5 = int(path[0][4]) if bag_tooldown_motion else 2048
+                        j5_tolerance = int(ARM_POSITION_THRESHOLDS[4]) if bag_tooldown_motion else 0
+                        if abs(int(command[4]) - held_j5) > j5_tolerance:
                             raise ValueError(
-                                "PAYMENT J5 changed | "
+                                "Tool-down J5 changed | "
                                 f"label={label_text} | "
                                 f"command={command_index} | "
                                 f"J5={int(command[4])}"
@@ -1999,6 +2005,7 @@ class MotorControlNode(Node):
 
                 payment_requires_tooldown_settle = (
                     payment_tooldown_motion
+                    or bag_tooldown_motion
                     or label_text.endswith(
                         "/TOOLDOWN_START"
                     )

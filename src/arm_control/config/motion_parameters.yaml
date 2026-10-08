@@ -60,7 +60,7 @@ paper_bag_reference:
     ready_tilt_deg: 70.0
     grasp_z_mm: 40.0
     grasp_tilt_deg: 90.0
-    lift_z_mm: 78.0
+    lift_z_mm: 128.0
     lift_tilt_deg: 90.0
   PICK_MIN_RADIUS_MM: 220.0
   PICK_MAX_RADIUS_MM: 400.0
