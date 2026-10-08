@@ -11,7 +11,6 @@ find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/DetectedItem.msg"
   "srv/ArmCommand.srv"
   "srv/ExecutePickPlace.srv"
   "srv/MoveTickPath.srv"

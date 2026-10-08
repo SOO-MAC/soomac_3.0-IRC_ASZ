@@ -23,7 +23,6 @@ from sensor_msgs.msg import CameraInfo
 from vision_msgs.msg import Detection2DArray
 from std_msgs.msg import String
 from std_srvs.srv import SetBool, Trigger
-from soomac_interfaces.msg import DetectedItem
 from soomac_interfaces.srv import ArmCommand, MoveTickPath
 from arm_control import robot_config
 from arm_control.robot_config import load_config
@@ -43,6 +42,18 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from collections import deque
 from std_msgs.msg import Int32MultiArray
 from soomac_interfaces.srv import MoveTickPath
+
+
+@dataclass(frozen=True)
+class ItemDetection:
+    """Internal detection data; not a ROS interface or serialized message."""
+
+    order_number: str
+    object_type: str
+    x_mm: float
+    y_mm: float
+    confidence: float
+
 
 COMMAND_SERVICE = "/arm_control/execute"
 CMD_PING = "PING"
@@ -3551,7 +3562,7 @@ class ArmControlNode(Node):
                 f"Main /driver_detected not accepted yet: {message}"
             )
 
-    def item_cb(self, msg: DetectedItem) -> None:
+    def item_cb(self, msg: ItemDetection) -> None:
         with self.state_lock:
             if self.current_order is None:
                 return
@@ -3757,7 +3768,7 @@ class ArmControlNode(Node):
         self._camera_intrinsics = None
         self._detection_last_log = {}
         self._detected_item_pub = self.create_publisher(
-            DetectedItem, DetectionGeometry.OUTPUT_TOPIC, 10
+            String, DetectionGeometry.OUTPUT_TOPIC, 10
         )
         camera_qos = QoSProfile(
             depth=1,
@@ -3854,21 +3865,39 @@ class ArmControlNode(Node):
             if xy is None:
                 continue
             x_mm, y_mm = xy
-            out = DetectedItem()
-            out.header = msg.header
-            out.order_number = order_number
-            out.object_type = object_type
-            out.x_mm = x_mm
-            out.y_mm = y_mm
-            out.confidence = min(object_conf, number_conf)
+            out = ItemDetection(
+                order_number=order_number,
+                object_type=object_type,
+                x_mm=x_mm,
+                y_mm=y_mm,
+                confidence=min(object_conf, number_conf),
+            )
             self.item_cb(out)
-            self._detected_item_pub.publish(out)
+            observation = String()
+            observation.data = json.dumps(
+                {
+                    "header": {
+                        "stamp": {
+                            "sec": msg.header.stamp.sec,
+                            "nanosec": msg.header.stamp.nanosec,
+                        },
+                        "frame_id": msg.header.frame_id,
+                    },
+                    "order_number": out.order_number,
+                    "object_type": out.object_type,
+                    "x_mm": out.x_mm,
+                    "y_mm": out.y_mm,
+                    "confidence": out.confidence,
+                },
+                ensure_ascii=False,
+            )
+            self._detected_item_pub.publish(observation)
             key = (str(det.id), order_number, object_type)
             last_ns = self._detection_last_log.get(key, 0)
             if now_ns - last_ns >= 1000000000:
                 self._detection_last_log[key] = now_ns
                 self.get_logger().info(
-                    f"DetectedItem | track={det.id} order={order_number} type={object_type} center_z={plane_z_mm:.1f} mm xy=({x_mm:.1f},{y_mm:.1f}) mm obj_conf={object_conf:.3f} num_vote={number_conf:.3f}"
+                    f"ItemDetection | track={det.id} order={order_number} type={object_type} center_z={plane_z_mm:.1f} mm xy=({x_mm:.1f},{y_mm:.1f}) mm obj_conf={object_conf:.3f} num_vote={number_conf:.3f}"
                 )
 
     def _initialize_driver_pose(self):
