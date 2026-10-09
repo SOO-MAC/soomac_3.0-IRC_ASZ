@@ -11,14 +11,19 @@ import traceback
 import time
 
 from enum import Enum
+
+# 기능별 하위 폴더의 모듈을 기존 이름으로 가져오기
+from pathlib import Path
+_LLM_ROOT = Path(__file__).resolve().parent
+for _folder in ("core", "speech", "ui"):
+    sys.path.insert(0, str(_LLM_ROOT / _folder))
+
 from modifier_selection import (
     detect_request as detect_modifier_request,
     resolve_targets as resolve_modifier_targets,
     explicit_new_order as explicit_new_modifier_order,
     normalize_target_followup as normalize_modifier_target_followup,
 )
-from pathlib import Path
-
 from checkout_manager import (
     OrderHandoffError,
     OrderHandoffManager,

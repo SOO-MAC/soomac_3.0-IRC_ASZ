@@ -19,7 +19,7 @@ from main_order_payload import OrderOutbox, validate_main_order
 class OrderResultPublisher(Node):
     def __init__(self):
         super().__init__("llm_order_result_publisher")
-        default_dir = Path(__file__).resolve().parent / "runtime_data/handoffs/ros_outbox"
+        default_dir = Path(__file__).resolve().parents[1] / "runtime_data/handoffs/ros_outbox"
         self.declare_parameter("outbox_dir", str(default_dir))
         self.declare_parameter("order_topic", "/order")
         self.declare_parameter("main_node_name", "drive_thru_main")

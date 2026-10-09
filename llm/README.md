@@ -1,32 +1,42 @@
-# SOOMAC IRC — Drive-Thru LLM V14 (실행용)
+# SOOMAC IRC — Drive-Thru LLM V14
 
-이 폴더는 자연어 주문을 구조화하고 주문 상태를 관리한 후 로봇 제어 쪽에 `FINAL HANDOFF`를 전달하는 실행 코드입니다.
+음성 주문을 해석하고 주문 상태를 관리하여 ROS2 MAIN 노드에 확정 주문을 전달하는 실행 코드입니다.
 
-## 처리 흐름
+## 폴더 구조
 
-STT → vLLM (Qwen V14) → XGrammar / Pydantic 검증 → Router / Order Runtime → 결정론적 가격 계산 → FINAL HANDOFF → ROS2 Task Manager
+- `core/` : Router, Fastpath, 주문 상태 관리, 메뉴·가격 계산, 주문 JSON 발행
+- `speech/` : STT 입력·필터·세션, UDP 브리지, TTS 텍스트 발행
+- `ui/` : 고객·직원 UI와 UI 서버
 
-## 주요 파일
+## 주요 실행 파일
 
-- `drive_thru_app.py`: 메인 주문 앱
-- `router_client.py`, `router_schema.py`, `router_policy.py`, `router_*fastpath.py`: 명령 해석과 Router
-- `order_runtime_final.py`, `order_schema.py`, `order_update_schema.py`: 주문 상태·검증
-- `menu_knowledge.py`, `checkout_manager.py`, `price_calorie_info_engine.py`: 메뉴 및 결제 정보
-- `ui/`, `ui_runtime_bridge.py`: 직원·고객 UI
-- `qwen_stt_ros_node.py`, `ros_stt_udp_bridge.py`, `tts_text_publisher.py`: 음성 및 ROS 연동
-- `requirements.txt`: 주요 의존성 및 CUDA/vLLM 관련 주의 사항
-- `requirements-runtime.txt`: 개발 PC 전체 환경의 참고 스냅샷(다른 컴퓨터에서 그대로 설치하는 것과는 다름)
+- `drive_thru_app.py` : 메인 주문 애플리케이션
+- `start_app.sh` : 주문 애플리케이션 실행
+- `start_vllm.sh` : vLLM 모델 서버 실행
+- `soomac_io.launch.py` : STT 브리지, TTS Publisher, 주문 Publisher 실행
 
 ## 실행
 
-V14 모델을 별도로 준비하고 `start_vllm.sh` 및 `start_app.sh`를 사용하세요.
+vLLM 서버:
 
-`start_vllm.sh`에 지정된 개발 PC 모델 경로: `~/drive_thru_llm/outputs/qwen35_drive_thru_v14_merged`
+    bash start_vllm.sh
 
-`start_app.sh`의 가상환경 경로: `~/drive_thru_venv`. 앱 작업 폴더는 스크립트 위치를 기준으로 자동 설정됩니다.
+주문 앱:
 
-`soomac_io.launch.py`도 런치 파일 위치를 기준으로 STT/TTS 스크립트를 찾습니다. 다른 PC에서는 외부 가상환경과 모델 경로만 확인하세요. ROS2 환경은 별도로 필요합니다.
+    bash start_app.sh
 
-## GitHub에 포함하지 않은 항목
+ROS2 연동:
 
-학습용 `dataset_v14/`, Router 평가 `router_data/`, `regression_cases/`, `test_*.py`, `eval_*.py`, `*.jsonl`, 테스트 결과 JSON, 모델 가중치와 가상환경은 제외했습니다. 학습이나 회귀 평가를 다시 수행하려면 별도로 보관한 원본 프로젝트에서 해당 파일을 가져와야 합니다.
+    source /opt/ros/humble/setup.bash
+    ros2 launch "$(pwd)/soomac_io.launch.py"
+
+각 명령은 llm/ 폴더에서 별도 터미널로 실행합니다.
+실제 STT 모델, 음성 합성 노드 및 MAIN 노드는 별도 실행이 필요합니다.
+
+## 주의사항
+
+주문 기록과 발행 대기열은 `llm/runtime_data/handoffs/`에 유지됩니다.
+이 폴더는 삭제하거나 초기화하지 마세요.
+
+모델 경로와 Python 가상환경은 실행 PC에 맞게 설정해야 합니다.
+기존 팀 저장소의 stt/, tts/, src/는 변경하지 않았습니다.

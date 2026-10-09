@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
-UI_DIR = Path(__file__).resolve().parent / "ui"
+UI_DIR = Path(__file__).resolve().parent
 
 
 class CustomerUIStore:

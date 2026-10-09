@@ -12,7 +12,7 @@ def generate_launch_description():
     stt_bridge = ExecuteProcess(
         cmd=[
             "python3",
-            str(llm_dir / "ros_stt_udp_bridge.py"),
+            str(llm_dir / "speech/ros_stt_udp_bridge.py"),
         ],
         output="screen",
     )
@@ -20,13 +20,13 @@ def generate_launch_description():
     tts_publisher = ExecuteProcess(
         cmd=[
             "python3",
-            str(llm_dir / "tts_text_publisher.py"),
+            str(llm_dir / "speech/tts_text_publisher.py"),
         ],
         output="screen",
     )
 
     order_publisher = ExecuteProcess(
-        cmd=["python3", str(llm_dir / "order_result_publisher.py")],
+        cmd=["python3", str(llm_dir / "core/order_result_publisher.py")],
         output="screen",
     )
 
