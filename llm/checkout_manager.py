@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from main_order_payload import OrderOutbox, build_main_order
+
 
 # ============================================================
 # PRICE TABLE
@@ -57,7 +59,7 @@ STANDALONE_SIDE_PRICE = {
 TOPPING_PRICE = {
     "cheese": 500,
     "bacon": 800,
-    "tomato": 400,
+    "patty": 900,
 }
 
 
@@ -87,6 +89,8 @@ class OrderHandoffManager:
         )
 
         self.first_order_id = first_order_id
+
+        self.order_outbox = OrderOutbox(self.storage_dir / "ros_outbox")
 
         self.lock = threading.Lock()
 
@@ -437,7 +441,9 @@ class OrderHandoffManager:
             except ValueError:
                 pass
 
-        return ids
+        # Keep accumulating after restart and after the developer /resetall.
+        # Published orders may still be waiting in the main node's queue.
+        return ids + self.order_outbox.existing_ids()
 
     def next_order_id(
         self,
@@ -471,6 +477,11 @@ class OrderHandoffManager:
         handoff: dict[str, Any],
     ) -> Path:
 
+        try:
+            main_order = build_main_order(handoff)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise OrderHandoffError(f"메인 노드 주문 변환 실패: {exc}") from exc
+
         path = self._handoff_path(
             handoff["order_id"]
         )
@@ -479,16 +490,15 @@ class OrderHandoffManager:
             ".json.tmp"
         )
 
-        temp_path.write_text(
-            json.dumps(
-                handoff,
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-
-        temp_path.replace(path)
+        try:
+            temp_path.write_text(
+                json.dumps(handoff, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temp_path.replace(path)
+            self.order_outbox.enqueue(main_order)
+        except (OSError, ValueError) as exc:
+            raise OrderHandoffError(f"주문 저장/발행 대기열 기록 실패: {exc}") from exc
 
         return path
 

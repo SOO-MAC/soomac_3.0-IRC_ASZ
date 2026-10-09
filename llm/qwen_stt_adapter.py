@@ -1,40 +1,179 @@
 #!/usr/bin/env python3
-"""
-qwen_stt_adapter.py - STT 계층과 ROS 사이를 잇는 얇은 층
-
-ResamplingMicStream 을 걷어냈다. 이유:
-  1) qwen_live 의 MicStream 이 리샘플링을 이미 내장한다. 중복이었다.
-  2) MicStream 은 16kHz 직접 열기를 먼저 시도한다. 성공하면 리샘플링 자체가 없다.
-     ResamplingMicStream 은 무조건 장치 기본 레이트(48kHz)로 열고 내렸다.
-  3) audioop.ratecv 는 안티앨리어싱 필터가 없는 선형 보간이다.
-     48k -> 16k 로 내릴 때 8~24kHz 성분이 0~8kHz 로 접혀 들어온다(앨리어싱).
-     자음의 파열음·마찰음처럼 고주파가 몰린 소리가 가장 크게 망가지고,
-     빠르게 말할수록 그 비중이 커진다. 실측에서 빠른 발화가 뭉개졌다.
-     MicStream 은 soxr(HQ, 안티앨리어싱 포함)를 쓴다.
-
-Silero 잡음 검증은 Segmenter 에 넘겨서 유지한다. 할루시네이션 대책은 이쪽이고
-정확도 저하는 마이크 경로 문제라 서로 독립이다.
-"""
 from __future__ import annotations
 
+import audioop
+import queue
 import sys
 import threading
 from pathlib import Path
+
+import pyaudio
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from stt.qwen_live_ver_3 import (   # noqa: E402
+from stt.qwen_live_ver_3 import (
     MicStream,
     SegmentConfig,
     Segmenter,
     QwenAsr,
     SpeechVerifier,
+    SAMPLE_RATE,
+    CHANNELS,
+    FRAME_MS,
+    FRAME_BYTES,
+    AUDIO_FORMAT,
 )
 
-from stt_guard import STTResult     # noqa: E402
+from stt_guard import STTResult
+
+
+class ResamplingMicStream(MicStream):
+    """
+    마이크가 16 kHz를 직접 지원하지 않아도
+    장치의 native sample rate로 캡처한 뒤
+    16 kHz PCM으로 변환해서 기존 Segmenter에 전달한다.
+    """
+
+    def start(self) -> None:
+        self._pa = pyaudio.PyAudio()
+
+        try:
+            if self._device_index is None:
+                info = self._pa.get_default_input_device_info()
+                self._device_index = int(info["index"])
+            else:
+                info = self._pa.get_device_info_by_index(
+                    self._device_index
+                )
+        except Exception as e:
+            self._pa.terminate()
+            self._pa = None
+            raise RuntimeError(
+                f"마이크 장치 정보를 읽지 못했다: {e}"
+            )
+
+        if int(info.get("maxInputChannels", 0)) < CHANNELS:
+            self._pa.terminate()
+            self._pa = None
+            raise RuntimeError(
+                f"장치 {self._device_index} "
+                f"({info['name']}) 는 입력 장치가 아니다."
+            )
+
+        self._capture_rate = int(
+            round(float(info["defaultSampleRate"]))
+        )
+
+        self._capture_frames = (
+            self._capture_rate * FRAME_MS // 1000
+        )
+
+        print(
+            f"마이크: [{self._device_index}] {info['name']}",
+            file=sys.stderr,
+        )
+
+        print(
+            f"캡처: {self._capture_rate} Hz "
+            f"-> STT/VAD: {SAMPLE_RATE} Hz",
+            file=sys.stderr,
+        )
+
+        try:
+            self._stream = self._pa.open(
+                format=AUDIO_FORMAT,
+                channels=CHANNELS,
+                rate=self._capture_rate,
+                input=True,
+                input_device_index=self._device_index,
+                frames_per_buffer=self._capture_frames,
+            )
+
+        except OSError as e:
+            self._pa.terminate()
+            self._pa = None
+            raise RuntimeError(
+                f"마이크를 못 열었다: {e}"
+            )
+
+        self._thread = threading.Thread(
+            target=self._loop,
+            name="mic-resample",
+            daemon=True,
+        )
+
+        self._thread.start()
+
+    def _loop(self) -> None:
+        acc = bytearray()
+        first = True
+        rate_state = None
+
+        while not self._stop.is_set():
+
+            try:
+                pcm = self._stream.read(
+                    self._capture_frames,
+                    exception_on_overflow=False,
+                )
+
+            except Exception as e:
+                if not self._stop.is_set():
+                    print(
+                        f"마이크 read 실패: {e}",
+                        file=sys.stderr,
+                    )
+                    self._stop.set()
+                return
+
+            if not pcm:
+                continue
+
+            if self._capture_rate != SAMPLE_RATE:
+                pcm, rate_state = audioop.ratecv(
+                    pcm,
+                    2,                  # int16 = 2 bytes
+                    CHANNELS,
+                    self._capture_rate,
+                    SAMPLE_RATE,
+                    rate_state,
+                )
+
+            if first:
+                print(
+                    f"리샘플 후 첫 chunk: "
+                    f"{len(pcm)} bytes",
+                    file=sys.stderr,
+                )
+                first = False
+
+            acc.extend(pcm)
+
+            while len(acc) >= FRAME_BYTES:
+                frame = bytes(acc[:FRAME_BYTES])
+                del acc[:FRAME_BYTES]
+
+                if not self._enabled.is_set():
+                    continue
+
+                try:
+                    self.q.put_nowait(frame)
+
+                except queue.Full:
+                    try:
+                        self.q.get_nowait()
+                    except queue.Empty:
+                        pass
+
+                    try:
+                        self.q.put_nowait(frame)
+                    except queue.Full:
+                        pass
+
+                    self.dropped += 1
 
 
 class QwenSTTAdapter:
@@ -54,9 +193,6 @@ class QwenSTTAdapter:
         min_speech_ms=200,
         max_utterance_ms=20_000,
         start_timeout_ms=6_000,
-        verify_speech=True,
-        silero_threshold=0.5,
-        silero_min_speech_ms=120,
     ):
         self._closed = False
         self._lock = threading.Lock()
@@ -71,8 +207,9 @@ class QwenSTTAdapter:
 
         self.asr.warmup(warmup)
 
-        # 16kHz 직접 열기를 먼저 시도하고, 안 되면 soxr 로 리샘플링한다.
-        self.mic = MicStream(device_index=device_index)
+        self.mic = ResamplingMicStream(
+            device_index=device_index
+        )
         self.mic.start()
 
         self.segment_config = SegmentConfig(
@@ -85,15 +222,11 @@ class QwenSTTAdapter:
         )
 
         self.verifier = None
-        if verify_speech:
-            try:
-                self.verifier = SpeechVerifier(
-                    silero_threshold,
-                    silero_min_speech_ms,
-                )
-            except Exception as e:
-                # 검증이 없어도 STT 자체는 돌아야 한다. 방어선 하나가 빠질 뿐이다.
-                print(f"★Silero 없이 진행: {e}", file=sys.stderr)
+        try:
+            self.verifier = SpeechVerifier(0.5, 120)
+        except Exception as e:
+            print(f"★Silero 없이 진행: {e}", file=sys.stderr)
+
 
     def transcribe_once(self) -> STTResult:
         with self._lock:
@@ -104,11 +237,7 @@ class QwenSTTAdapter:
                     error_detail="Qwen STT adapter is closed.",
                 )
 
-            segmenter = Segmenter(
-                self.mic,
-                self.segment_config,
-                self.verifier,
-            )
+            segmenter = Segmenter(self.mic, self.segment_config, self.verifier)
 
             cancel_event = threading.Event()
 
@@ -127,7 +256,6 @@ class QwenSTTAdapter:
                 self.mic.close_gate()
 
             if pcm is None:
-                # 잡음은 Segmenter 가 이미 걸렀다. 여기 오는 건 무발화·취소뿐이다.
                 return STTResult(
                     transcript=None,
                     ok=True,

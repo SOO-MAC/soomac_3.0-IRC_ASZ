@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>ASZ Drive-Thru</title>
+
+<style>
+:root {
+    --red: #d92828;
+    --red-dark: #b91f1f;
+
+    --yellow: #f5bd3d;
+    --yellow-soft: #fff0bc;
+
+    --cream: #fff9e9;
+    --paper: #fffdf8;
+
+    --brown: #352b27;
+    --brown-soft: #72645b;
+
+    --line: #ead8c4;
+
+    --green: #248755;
+    --green-soft: #e7f7ed;
+
+    --danger-soft: #ffe4e4;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+
+    font-family:
+        "Pretendard",
+        "Noto Sans KR",
+        "Apple SD Gothic Neo",
+        Arial,
+        sans-serif;
+
+    color: var(--brown);
+    background: var(--cream);
+
+    overflow: hidden;
+}
+
+
+/* =========================================================
+   전체 화면
+========================================================= */
+
+.screen {
+    width: 100vw;
+    height: 100vh;
+
+    padding: 24px 28px 26px;
+
+    display: flex;
+    flex-direction: column;
+
+    background:
+        linear-gradient(
+            135deg,
+            #fffdf8 0%,
+            #fff6dc 100%
+        );
+}
+
+
+/* =========================================================
+   HEADER
+========================================================= */
+
+.header {
+    height: 64px;
+    flex-shrink: 0;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.brand-icon {
+    font-size: 32px;
+    line-height: 1;
+}
+
+.soomac {
+    font-size: 23px;
+    font-weight: 950;
+    letter-spacing: 0.7px;
+
+    color: var(--red);
+}
+
+.drive {
+    font-size: 29px;
+    font-weight: 950;
+}
+
+.system-badge {
+    min-height: 34px;
+
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+
+    padding: 0 13px;
+
+    border-radius: 999px;
+
+    background: #f5ead9;
+    color: #76604d;
+
+    font-size: 13px;
+    font-weight: 900;
+
+    line-height: 1;
+    letter-spacing: 0.5px;
+}
+
+
+/* =========================================================
+   MAIN LAYOUT
+========================================================= */
+
+.content {
+    flex: 1;
+    min-height: 0;
+
+    display: grid;
+
+    /*
+       현재 주문이 가장 중요.
+       왼쪽 65 / 대화 35
+    */
+    grid-template-columns: minmax(0, 65fr) minmax(380px, 35fr);
+
+    gap: 16px;
+}
+
+
+/* =========================================================
+   공통 PANEL
+========================================================= */
+
+.panel {
+    min-width: 0;
+    min-height: 0;
+
+    background: var(--paper);
+
+    border: 2px solid var(--line);
+    border-radius: 21px;
+
+    box-shadow:
+        0 5px 17px rgba(70, 45, 25, 0.055);
+
+    overflow: hidden;
+}
+
+
+/* =========================================================
+   ORDER PANEL
+========================================================= */
+
+.order-panel {
+    display: flex;
+    flex-direction: column;
+}
+
+.order-header {
+    flex-shrink: 0;
+
+    min-height: 72px;
+
+    padding: 14px 21px;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    background:
+        linear-gradient(
+            90deg,
+            #ffedac 0%,
+            #fff7dc 100%
+        );
+
+    border-bottom: 2px solid #efc85e;
+}
+
+.order-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.order-title-icon {
+    font-size: 29px;
+    line-height: 1;
+}
+
+.order-title {
+    font-size: 26px;
+    font-weight: 950;
+}
+
+.order-count {
+    min-height: 34px;
+
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+
+    padding: 0 13px;
+
+    border-radius: 999px;
+
+    background: var(--red);
+    color: white;
+
+    font-size: 14px;
+    font-weight: 900;
+
+    line-height: 1;
+}
+
+
+/* 주문 목록 */
+
+.order-list {
+    flex: 1;
+    min-height: 0;
+
+    overflow-y: auto;
+
+    padding: 14px 16px;
+
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.order-item {
+    flex-shrink: 0;
+
+    position: relative;
+
+    min-height: 118px;
+
+    padding: 20px 21px 19px 26px;
+
+    border: 1px solid #ecdbc8;
+    border-radius: 17px;
+
+    background: #ffffff;
+
+    box-shadow:
+        0 4px 11px rgba(75, 48, 30, 0.05);
+
+    overflow: hidden;
+}
+
+.order-item::before {
+    content: "";
+
+    position: absolute;
+
+    left: 0;
+    top: 0;
+    bottom: 0;
+
+    width: 7px;
+
+    background: var(--red);
+}
+
+.order-main {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    gap: 18px;
+}
+
+.order-name {
+    font-size: 25px;
+    font-weight: 950;
+    line-height: 1.25;
+}
+
+.quantity {
+    margin-left: 7px;
+
+    font-size: 18px;
+    font-weight: 850;
+
+    color: var(--brown-soft);
+}
+
+.order-price {
+    flex-shrink: 0;
+
+    font-size: 23px;
+    font-weight: 950;
+
+    color: var(--red);
+}
+
+
+/* 옵션 */
+
+.options {
+    display: flex;
+    flex-wrap: wrap;
+
+    gap: 8px;
+
+    margin-top: 14px;
+}
+
+.option {
+    min-height: 39px;
+
+    display: inline-flex;
+    align-items: center;
+
+    padding: 7px 12px;
+
+    border-radius: 10px;
+
+    background: var(--yellow-soft);
+    color: #6f5109;
+
+    font-size: 17px;
+    font-weight: 850;
+
+    line-height: 1;
+}
+
+.option.add {
+    background: #ffe7a3;
+    color: #674800;
+}
+
+.option.remove {
+    background: var(--danger-soft);
+    color: #ab2828;
+}
+
+
+/* 주문 없음 */
+
+.empty-order {
+    flex: 1;
+
+    display: flex;
+    flex-direction: column;
+
+    align-items: center;
+    justify-content: center;
+
+    color: var(--brown-soft);
+
+    text-align: center;
+}
+
+.empty-order-icon {
+    font-size: 65px;
+}
+
+.empty-order-title {
+    margin-top: 12px;
+
+    font-size: 24px;
+    font-weight: 900;
+}
+
+.empty-order-sub {
+    margin-top: 6px;
+
+    font-size: 16px;
+    font-weight: 700;
+}
+
+
+/* =========================================================
+   TOTAL
+========================================================= */
+
+.total-area {
+    flex-shrink: 0;
+
+    padding: 17px 22px 18px;
+
+    background:
+        linear-gradient(
+            90deg,
+            #ffefb9,
+            #fff6d8
+        );
+
+    border-top: 3px solid var(--yellow);
+}
+
+.total-small {
+    font-size: 15px;
+    font-weight: 800;
+
+    color: var(--brown-soft);
+}
+
+.total-row {
+    margin-top: 3px;
+
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+}
+
+.total-title {
+    font-size: 25px;
+    font-weight: 950;
+}
+
+.total-price {
+    font-size: 40px;
+    font-weight: 950;
+
+    color: var(--red);
+}
+
+
+/* =========================================================
+   CONVERSATION PANEL
+========================================================= */
+
+.conversation-panel {
+    display: flex;
+    flex-direction: column;
+}
+
+.conversation-header {
+    flex-shrink: 0;
+
+    min-height: 72px;
+
+    padding: 14px 17px;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    background: #fffaf2;
+
+    border-bottom: 1px solid var(--line);
+}
+
+.conversation-title {
+    font-size: 21px;
+    font-weight: 950;
+}
+
+.live-badge {
+    min-height: 30px;
+
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+
+    padding: 0 11px;
+
+    border-radius: 999px;
+
+    background: var(--green-soft);
+    color: var(--green);
+
+    font-size: 12px;
+    font-weight: 950;
+
+    line-height: 1;
+}
+
+
+/* =========================================================
+   VOICE STATUS - 대화창 내부 핵심 영역
+========================================================= */
+
+.conversation-voice-status {
+    flex-shrink: 0;
+
+    min-height: 124px;
+
+    padding: 18px;
+
+    display: grid;
+
+    grid-template-columns: 72px 1fr auto;
+
+    gap: 14px;
+
+    align-items: center;
+
+    background:
+        linear-gradient(
+            135deg,
+            #ffedaa,
+            #fff6d3
+        );
+
+    border-bottom: 2px solid #efcb6b;
+}
+
+
+/* 마이크 대신 음성 파형 */
+
+.waveform {
+    width: 68px;
+    height: 68px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    gap: 5px;
+
+    border-radius: 17px;
+
+    background:
+        linear-gradient(
+            145deg,
+            #e42b2b,
+            #bf1e1e
+        );
+
+    box-shadow:
+        0 5px 13px rgba(185, 31, 31, 0.18);
+}
+
+.waveform span {
+    width: 6px;
+
+    border-radius: 99px;
+
+    background: white;
+
+    animation:
+        voiceWave 0.95s
+        ease-in-out
+        infinite;
+}
+
+.waveform span:nth-child(1) {
+    height: 20px;
+    animation-delay: 0s;
+}
+
+.waveform span:nth-child(2) {
+    height: 36px;
+    animation-delay: 0.12s;
+}
+
+.waveform span:nth-child(3) {
+    height: 49px;
+    animation-delay: 0.24s;
+}
+
+.waveform span:nth-child(4) {
+    height: 35px;
+    animation-delay: 0.36s;
+}
+
+.waveform span:nth-child(5) {
+    height: 21px;
+    animation-delay: 0.48s;
+}
+
+@keyframes voiceWave {
+
+    0%,
+    100% {
+        transform: scaleY(0.52);
+        opacity: 0.72;
+    }
+
+    50% {
+        transform: scaleY(1);
+        opacity: 1;
+    }
+}
+
+
+/* 듣고 있지 않을 때 파형 정지 */
+
+.waveform.inactive span {
+    animation-play-state: paused;
+    transform: scaleY(0.4);
+    opacity: 0.45;
+}
+
+
+/* 상태 글씨 */
+
+.voice-main {
+    font-size: 24px;
+    font-weight: 950;
+
+    line-height: 1.2;
+}
+
+.voice-sub {
+    margin-top: 6px;
+
+    font-size: 15px;
+    font-weight: 750;
+
+    line-height: 1.35;
+
+    color: var(--brown-soft);
+}
+
+.listening-badge {
+    min-height: 32px;
+
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+
+    padding: 0 10px;
+
+    border-radius: 999px;
+
+    background: var(--green-soft);
+    color: var(--green);
+
+    font-size: 11px;
+    font-weight: 950;
+
+    line-height: 1;
+
+    letter-spacing: 0.4px;
+}
+
+
+/* =========================================================
+   CONVERSATION
+========================================================= */
+
+.conversation {
+    flex: 1;
+    min-height: 0;
+
+    overflow-y: auto;
+
+    padding: 17px 16px;
+
+    display: flex;
+    flex-direction: column;
+
+    gap: 17px;
+}
+
+.message {
+    max-width: 90%;
+
+    display: flex;
+    flex-direction: column;
+}
+
+.message.soomac {
+    align-self: flex-start;
+}
+
+.message.customer {
+    align-self: flex-end;
+}
+
+.message-label {
+    margin-bottom: 5px;
+
+    font-size: 13px;
+    font-weight: 900;
+
+    color: var(--brown-soft);
+
+    line-height: 1;
+}
+
+.message.customer .message-label {
+    text-align: right;
+}
+
+.bubble {
+    padding: 13px 15px;
+
+    border-radius: 14px;
+
+    font-size: 18px;
+    font-weight: 750;
+
+    line-height: 1.5;
+}
+
+.message.soomac .bubble {
+    background: #f1f1ed;
+
+    border-bottom-left-radius: 4px;
+}
+
+.message.customer .bubble {
+    background: #ffe5a0;
+    color: #604607;
+
+    border-bottom-right-radius: 4px;
+}
+
+
+/* =========================================================
+   LAST HEARD
+========================================================= */
+
+.last-heard {
+    flex-shrink: 0;
+
+    margin: 0 12px 12px;
+
+    padding: 13px 15px;
+
+    border-radius: 13px;
+
+    background: #fff1bd;
+
+    border: 1px solid #eacb6b;
+}
+
+.last-label {
+    font-size: 13px;
+    font-weight: 850;
+
+    color: #816116;
+}
+
+.last-text {
+    margin-top: 5px;
+
+    font-size: 18px;
+    font-weight: 850;
+
+    line-height: 1.4;
+}
+
+
+/* =========================================================
+   SCROLL BAR
+========================================================= */
+
+.order-list::-webkit-scrollbar,
+.conversation::-webkit-scrollbar {
+    width: 7px;
+}
+
+.order-list::-webkit-scrollbar-thumb,
+.conversation::-webkit-scrollbar-thumb {
+    background: #d5bfa8;
+
+    border-radius: 99px;
+}
+
+
+/* =========================================================
+   SMALL DISPLAY
+========================================================= */
+
+@media (max-width: 1200px) {
+
+    .content {
+        grid-template-columns:
+            minmax(0, 62fr)
+            minmax(340px, 38fr);
+    }
+
+    .order-name {
+        font-size: 21px;
+    }
+
+    .option {
+        font-size: 15px;
+    }
+
+    .voice-main {
+        font-size: 21px;
+    }
+
+    .conversation-voice-status {
+        grid-template-columns:
+            65px 1fr;
+    }
+
+    .listening-badge {
+        display: none;
+    }
+}
+
+</style>
+</head>
+
+
+<body>
+
+<div class="screen">
+
+
+    <!-- =====================================================
+         HEADER
+    ====================================================== -->
+
+    <header class="header">
+
+        <div class="brand">
+
+            <span class="brand-icon">
+                🍔
+            </span>
+
+            <span class="soomac">
+                ASZ
+            </span>
+
+            <span class="drive">
+                DRIVE-THRU
+            </span>
+
+        </div>
+
+
+        <div class="system-badge">
+            SMART ORDER SYSTEM
+        </div>
+
+    </header>
+
+
+
+    <!-- =====================================================
+         CONTENT
+    ====================================================== -->
+
+    <main class="content">
+
+
+        <!-- =================================================
+             CURRENT ORDER
+        ================================================== -->
+
+        <section class="panel order-panel">
+
+            <div class="order-header">
+
+                <div class="order-title-wrap">
+
+                    <span class="order-title-icon">
+                        🍔
+                    </span>
+
+                    <span class="order-title">
+                        현재 주문 메뉴
+                    </span>
+
+                </div>
+
+
+                <div
+                    class="order-count"
+                    id="orderCount"
+                >
+                    총 0개
+                </div>
+
+            </div>
+
+
+            <div
+                class="order-list"
+                id="orderList"
+            ></div>
+
+
+            <div class="total-area">
+
+                <div class="total-small">
+                    결제 예정 금액
+                </div>
+
+
+                <div class="total-row">
+
+                    <div class="total-title">
+                        💰 총 주문금액
+                    </div>
+
+                    <div
+                        class="total-price"
+                        id="totalPrice"
+                    >
+                        0원
+                    </div>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+
+        <!-- =================================================
+             REAL-TIME CONVERSATION
+        ================================================== -->
+
+        <section class="panel conversation-panel">
+
+            <div class="conversation-header">
+
+                <div class="conversation-title">
+                    실시간 대화
+                </div>
+
+                <div class="live-badge">
+                    LIVE
+                </div>
+
+            </div>
+
+
+
+            <!-- VOICE STATUS -->
+
+            <div class="conversation-voice-status">
+
+                <div
+                    class="waveform"
+                    id="waveform"
+                    aria-hidden="true"
+                >
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+
+
+                <div>
+
+                    <div
+                        class="voice-main"
+                        id="statusBox"
+                    >
+                        음성 주문 대기 중
+                    </div>
+
+                    <div
+                        class="voice-sub"
+                        id="statusSub"
+                    >
+                        지금 주문을 말씀해 주세요
+                    </div>
+
+                </div>
+
+
+                <div
+                    class="listening-badge"
+                    id="listenStatus"
+                >
+                    LISTENING
+                </div>
+
+            </div>
+
+
+
+            <!-- CONVERSATION -->
+
+            <div
+                class="conversation"
+                id="conversation"
+            ></div>
+
+
+
+            <!-- LAST HEARD -->
+
+            <div class="last-heard">
+
+                <div class="last-label">
+                    방금 인식한 음성
+                </div>
+
+                <div
+                    class="last-text"
+                    id="lastHeard"
+                >
+                    아직 인식된 음성이 없습니다.
+                </div>
+
+            </div>
+
+        </section>
+
+    </main>
+
+</div>
+
+
+<script src="customer.js"></script>
+
+</body>
+</html>
