@@ -29,6 +29,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 install(PROGRAMS
   scripts/arm_control
+  scripts/drivethru_NFC
   scripts/nfc_payment_bridge
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch
