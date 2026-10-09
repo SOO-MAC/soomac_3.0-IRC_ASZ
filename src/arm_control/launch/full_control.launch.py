@@ -20,6 +20,11 @@ def generate_launch_description():
                 default_value="false",
                 description="Start Detection1 and Detection2 with the control nodes.",
             ),
+            DeclareLaunchArgument(
+                "nfc_serial_port",
+                default_value="/dev/ttyACM0",
+                description="ESP32-S3 USB serial port for RFID payment.",
+            ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     str(
@@ -51,6 +56,19 @@ def generate_launch_description():
                 executable="motor_control",
                 name="motor_control_node",
                 output="screen",
+            ),
+            Node(
+                package="arm_control",
+                executable="nfc_payment_bridge",
+                name="nfc_payment_bridge",
+                output="screen",
+                parameters=[
+                    {
+                        "serial_port": LaunchConfiguration("nfc_serial_port"),
+                        "baudrate": 115200,
+                        "payment_service": "/payment_done",
+                    }
+                ],
             ),
         ]
     )

@@ -27,7 +27,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/MoveToTicks.srv"
 )
 
-install(PROGRAMS scripts/arm_control
+install(PROGRAMS
+  scripts/arm_control
+  scripts/nfc_payment_bridge
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})
