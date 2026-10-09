@@ -215,6 +215,74 @@ class RuntimeWorker:
         )
 
     # ========================================================
+    # PREBUILT ORDER UPDATE
+    # Router Fast Path: 두 번째 LLM 호출 없이 State Manager 적용
+    # ========================================================
+
+    def submit_prebuilt(
+        self,
+        update_data,
+        *,
+        source_text=None,
+    ):
+        if self._stopped.is_set():
+            raise RuntimeWorkerStopped(
+                "RuntimeWorker가 이미 종료되었습니다."
+            )
+
+        future = Future()
+
+        request_id = next(
+            self._request_counter
+        )
+
+        generation = self.generation
+
+        task = _RuntimeTask(
+            kind="prebuilt",
+            generation=generation,
+            request_id=request_id,
+            text={
+                "update": copy.deepcopy(update_data),
+                "source_text": source_text,
+            },
+            future=future,
+        )
+
+        try:
+            self._tasks.put_nowait(
+                task
+            )
+
+        except queue.Full:
+            raise RuntimeQueueFull(
+                "Runtime 요청 queue가 가득 찼습니다."
+            )
+
+        return (
+            request_id,
+            generation,
+            future,
+        )
+
+    def process_prebuilt(
+        self,
+        update_data,
+        *,
+        source_text=None,
+        timeout=None,
+    ):
+        _, _, future = self.submit_prebuilt(
+            update_data,
+            source_text=source_text,
+        )
+
+        return future.result(
+            timeout=timeout
+        )
+
+
+    # ========================================================
     # RESET / SESSION INVALIDATION
     # ========================================================
 
@@ -372,6 +440,111 @@ class RuntimeWorker:
                             )
 
                         continue
+
+                    # ==========================================
+                    # PREBUILT FAST PATH
+                    # ==========================================
+
+                    if task.kind == "prebuilt":
+
+                        if (
+                            task.generation
+                            != self.generation
+                        ):
+                            if not task.future.done():
+                                task.future.set_exception(
+                                    StaleRuntimeRequest(
+                                        "Fast Path 처리 전에 "
+                                        "고객 세션이 변경되었습니다."
+                                    )
+                                )
+                            continue
+
+                        self._set_busy(
+                            True
+                        )
+
+                        try:
+                            from order_update_schema import OrderUpdate
+
+                            payload = task.text or {}
+
+                            update = OrderUpdate.model_validate(
+                                payload.get("update")
+                            )
+
+                            runtime.manager.apply(
+                                update
+                            )
+
+                            result = {
+                                "llm_update": {
+                                    "source": "router_fastpath",
+                                    "second_llm_call": False,
+                                },
+                                "verified_update":
+                                    update.model_dump(
+                                        mode="json"
+                                    ),
+                                "state":
+                                    copy.deepcopy(
+                                        runtime.manager.state
+                                    ),
+                                "pending":
+                                    copy.deepcopy(
+                                        runtime.manager.pending
+                                    ),
+                                "warnings": [
+                                    "ROUTER FAST PATH: "
+                                    "두 번째 V14 호출 생략"
+                                ],
+                            }
+
+                        except Exception as e:
+
+                            self._update_snapshot(
+                                runtime,
+                                busy=False,
+                            )
+
+                            if not task.future.done():
+                                task.future.set_exception(
+                                    e
+                                )
+
+                            continue
+
+                        if (
+                            task.generation
+                            != self.generation
+                        ):
+                            self._update_snapshot(
+                                runtime,
+                                busy=False,
+                            )
+
+                            if not task.future.done():
+                                task.future.set_exception(
+                                    StaleRuntimeRequest(
+                                        "Fast Path 처리 중 "
+                                        "고객 세션이 변경되었습니다."
+                                    )
+                                )
+
+                            continue
+
+                        self._update_snapshot(
+                            runtime,
+                            busy=False,
+                        )
+
+                        if not task.future.done():
+                            task.future.set_result(
+                                result
+                            )
+
+                        continue
+
 
                     # ==========================================
                     # PROCESS

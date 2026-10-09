@@ -56,14 +56,13 @@ class Exclude(str, Enum):
     ONION = "onion"
     PICKLE = "pickle"
     TOMATO = "tomato"
-    CHEESE = "cheese"
     LETTUCE = "lettuce"
 
 
 class Topping(str, Enum):
     CHEESE = "cheese"
     BACON = "bacon"
-    TOMATO = "tomato"
+    PATTY = "patty"
 
 
 # =========================

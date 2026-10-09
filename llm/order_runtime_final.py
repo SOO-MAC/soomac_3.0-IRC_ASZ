@@ -394,7 +394,6 @@ EXCLUDE_INGREDIENT_ALIASES = {
     "onion": ("양파",),
     "pickle": ("피클",),
     "tomato": ("토마토",),
-    "cheese": ("치즈",),
     "lettuce": ("양상추",),
 }
 
@@ -573,6 +572,730 @@ def repair_pending_burger_modifiers(utterance: str, state, pending, update):
 
     return OrderUpdate.model_validate(data), warnings
 
+
+# ============================================================
+# deterministic topping grounding guard
+# ============================================================
+
+TOPPING_ALIASES = {
+    "cheese": ("치즈",),
+    "bacon": ("베이컨",),
+    "patty": ("패티",),
+}
+
+
+
+def explicit_topping_add_values(text: str):
+    """
+    실제로 추가 요청된 topping만 반환한다.
+
+    예:
+        치즈 추가해주세요          -> cheese
+        베이컨 넣어주세요          -> bacon
+
+        베이컨 추가하지 말고       -> 제외
+        베이컨 넣지 말고           -> 제외
+        치즈버거 주세요            -> 제외
+    """
+
+    raw = compact_text(text)
+
+    found = set()
+
+    for value, aliases in TOPPING_ALIASES.items():
+
+        positive = False
+
+        for alias in aliases:
+
+            a = re.escape(
+                compact_text(alias)
+            )
+
+            stem = (
+                rf"{a}"
+                rf"(?:은|는|을|를|도|만)?"
+            )
+
+            patterns = (
+                rf"{stem}추가",
+                rf"{stem}넣어",
+                rf"{stem}더넣어",
+                rf"{stem}더",
+                rf"{stem}올려",
+                rf"{stem}얹어",
+            )
+
+            for pattern in patterns:
+
+                for match in re.finditer(
+                    pattern,
+                    raw,
+                ):
+
+                    suffix = raw[
+                        match.end():
+                    ]
+
+                    # "베이컨 추가하지 말고"
+                    # "치즈 추가 안 해줘"
+                    negative = (
+                        suffix.startswith(
+                            "하지"
+                        )
+                        or suffix.startswith(
+                            "안해"
+                        )
+                        or suffix.startswith(
+                            "말아"
+                        )
+                    )
+
+                    if negative:
+                        continue
+
+                    positive = True
+                    break
+
+                if positive:
+                    break
+
+            if positive:
+                found.add(value)
+                break
+
+    return found
+
+
+
+
+
+
+
+
+def repair_explicit_modify_topping_additions(
+    utterance,
+    state,
+    update,
+):
+    """
+    기존 burger MODIFY에서 LLM이 명시적 topping 추가를
+    누락한 경우에만 복구한다.
+
+    예:
+        현재: 피클 제외 + 베이컨 추가
+        발화:
+          "피클 다시 넣고 베이컨 빼고 치즈 추가해줘"
+
+    LLM:
+        exclude_remove=pickle
+        toppings_remove=bacon
+        toppings_add 누락
+
+    verifier:
+        toppings_add=cheese 복구
+
+    여러 burger를 동시에 수정하는 애매한 상황에서는
+    deterministic하게 개입하지 않는다.
+    """
+
+    warnings = []
+
+    if val(update.intent) != "order":
+        return update, warnings
+
+    requested = (
+        explicit_topping_add_values(
+            utterance
+        )
+    )
+
+    if not requested:
+        return update, warnings
+
+    data = update.model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+
+    actions = data.get(
+        "actions",
+        [],
+    )
+
+    modifies = [
+        action
+        for action in actions
+        if action.get("operation")
+        == "modify"
+    ]
+
+    # 단일 modify는 기존처럼 그대로 처리한다.
+    #
+    # 여러 modify가 동시에 존재하는 경우에는 topping을 임의로
+    # 배분하지 않는다. 다만 다음 조건을 모두 만족하면 안전하게
+    # contextual target을 하나로 결정할 수 있다.
+    #
+    #   1. 발화에 명시적으로 언급된 burger menu가 정확히 하나
+    #   2. 그 menu에 해당하는 modify target도 정확히 하나
+    #   3. 그 외 burger modify target도 정확히 하나
+    #
+    # 예:
+    #   "치즈 추가해주시고
+    #    아까 불고기버거에 콜라 라지로 바꿔주세요"
+    #
+    # 불고기버거는 명시적으로 line 1에 grounding되고,
+    # 남은 burger modify가 line 2 하나라면
+    # 앞의 contextual topping 요청은 line 2로 복구할 수 있다.
+    if len(modifies) == 1:
+        action = modifies[0]
+
+        target = (
+            action.get("target")
+            or {}
+        )
+
+        line_id = target.get(
+            "line_id"
+        )
+
+        if line_id is None:
+            return update, warnings
+
+        target_item = next(
+            (
+                item
+                for item in state.get(
+                    "items",
+                    [],
+                )
+                if item.get("line_id")
+                == line_id
+            ),
+            None,
+        )
+
+        if (
+            target_item is None
+            or target_item.get(
+                "item_type"
+            )
+            != "burger"
+        ):
+            return update, warnings
+
+    else:
+        menus = grounded_menu_values(
+            utterance
+        )
+
+        # 명시 menu가 하나로 grounding되지 않으면
+        # multi-modify topping target을 추측하지 않는다.
+        if len(menus) != 1:
+            return update, warnings
+
+        explicit_menu = next(
+            iter(menus)
+        )
+
+        burger_candidates = []
+
+        for candidate in modifies:
+            candidate_target = (
+                candidate.get("target")
+                or {}
+            )
+
+            candidate_line_id = (
+                candidate_target.get(
+                    "line_id"
+                )
+            )
+
+            if candidate_line_id is None:
+                continue
+
+            candidate_item = next(
+                (
+                    item
+                    for item in state.get(
+                        "items",
+                        [],
+                    )
+                    if item.get("line_id")
+                    == candidate_line_id
+                ),
+                None,
+            )
+
+            if (
+                candidate_item is None
+                or candidate_item.get(
+                    "item_type"
+                )
+                != "burger"
+            ):
+                continue
+
+            burger_candidates.append(
+                (
+                    candidate,
+                    candidate_item,
+                )
+            )
+
+        mentioned = [
+            pair
+            for pair in burger_candidates
+            if pair[1].get("menu")
+            == explicit_menu
+        ]
+
+        contextual = [
+            pair
+            for pair in burger_candidates
+            if pair[1].get("menu")
+            != explicit_menu
+        ]
+
+        # 어느 action이 contextual topping 대상인지
+        # 정확히 하나로 결정되지 않으면 기존처럼 개입하지 않는다.
+        if (
+            len(mentioned) != 1
+            or len(contextual) != 1
+        ):
+            return update, warnings
+
+        action, target_item = (
+            contextual[0]
+        )
+
+        target = (
+            action.get("target")
+            or {}
+        )
+
+        line_id = target.get(
+            "line_id"
+        )
+
+        if line_id is None:
+            return update, warnings
+
+        warnings.append(
+            "multi-modify contextual topping target 복구: "
+            f"line {line_id}"
+        )
+
+    existing = set(
+        action.get(
+            "toppings_add",
+            [],
+        )
+        or []
+    )
+
+    missing = (
+        requested
+        - existing
+    )
+
+    if not missing:
+        return update, warnings
+
+    action["toppings_add"] = sorted(
+        existing
+        | requested
+    )
+
+    warnings.append(
+        "burger MODIFY 명시적 topping 복구: "
+        + ", ".join(
+            sorted(missing)
+        )
+    )
+
+    return (
+        OrderUpdate.model_validate(
+            data
+        ),
+        warnings,
+    )
+
+
+
+
+
+def _explicit_burger_add_exclude_values_repair(text):
+    """
+    신규 burger 주문에서 연결형 제외 표현까지 잡는다.
+
+    예:
+        피클 빼서
+        피클 빼고
+        양상추 제외해서
+        토마토 없이
+
+    제외:
+        피클 빼지 말고
+        피클 빼놓은 버거
+    """
+
+    raw = compact_text(text)
+
+    found = set()
+
+    for value, aliases in (
+        EXCLUDE_INGREDIENT_ALIASES.items()
+    ):
+
+        for alias in aliases:
+
+            a = re.escape(
+                compact_text(alias)
+            )
+
+            stem = (
+                rf"{a}"
+                rf"(?:은|는|을|를|도|만)?"
+            )
+
+            negative_patterns = (
+                rf"{stem}빼지",
+                rf"{stem}제외하지",
+                rf"{stem}없애지",
+            )
+
+            if any(
+                re.search(
+                    pattern,
+                    raw,
+                )
+                for pattern
+                in negative_patterns
+            ):
+                continue
+
+            positive_patterns = (
+                # 피클 빼서 / 빼고 / 빼고서
+                rf"{stem}빼(?:서|고서|고)",
+
+                # 피클 빼주세요 / 빼줘
+                rf"{stem}빼(?:주세요|줘|주라|주실래|주십시오)",
+
+                # 양상추 제외해서 / 제외하고
+                rf"{stem}제외(?:해서|하고)",
+
+                # 양상추 제외해주세요
+                rf"{stem}제외(?:해주세요|해줘|해주라|해주실래|해주십시오)",
+
+                # 토마토 없이 / 없이 해주세요
+                rf"{stem}없이(?:해서|하고|해주세요|해줘|주세요|줘)?",
+            )
+
+            if any(
+                re.search(
+                    pattern,
+                    raw,
+                )
+                for pattern
+                in positive_patterns
+            ):
+                found.add(
+                    value
+                )
+                break
+
+    return found
+
+
+def repair_explicit_burger_add_modifiers(
+    utterance,
+    state,
+    pending,
+    update,
+):
+    """
+    신규 burger ADD에서 LLM이 명시적 modifier를
+    빠뜨린 경우 deterministic하게 복원한다.
+
+    복원 대상:
+        exclude_add
+        toppings_add
+
+    특정 문장을 하드코딩하지 않고
+    메뉴 + modifier semantic category만 사용한다.
+    """
+
+    warnings = []
+
+    if pending is not None:
+        return update, warnings
+
+    if val(update.intent) != "order":
+        return update, warnings
+
+    menus = grounded_menu_values(
+        utterance
+    )
+
+    # 신규 burger가 정확히 하나로 grounding될 때만 개입
+    if len(menus) != 1:
+        return update, warnings
+
+    menu = next(
+        iter(menus)
+    )
+
+    requested_excludes = (
+        _explicit_burger_add_exclude_values_repair(
+            utterance
+        )
+    )
+
+    requested_toppings = (
+        explicit_topping_add_values(
+            utterance
+        )
+    )
+
+    if (
+        not requested_excludes
+        and not requested_toppings
+    ):
+        return update, warnings
+
+    data = update.model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+
+    actions = data.get(
+        "actions",
+        [],
+    )
+
+    candidates = []
+
+    for action in actions:
+
+        if (
+            action.get("operation")
+            != "add"
+        ):
+            continue
+
+        item = (
+            action.get("item")
+            or {}
+        )
+
+        if (
+            item.get("item_type")
+            != "burger"
+        ):
+            continue
+
+        if (
+            item.get("menu")
+            != menu
+        ):
+            continue
+
+        candidates.append(
+            action
+        )
+
+    # 여러 burger ADD에 임의로 modifier를 분배하지 않는다.
+    if len(candidates) != 1:
+        return update, warnings
+
+    action = candidates[0]
+
+    # --------------------------------------------------------
+    # 재료 제외 복원
+    # --------------------------------------------------------
+
+    existing_excludes = set(
+        action.get(
+            "exclude_add",
+            [],
+        )
+        or []
+    )
+
+    missing_excludes = (
+        requested_excludes
+        - existing_excludes
+    )
+
+    if missing_excludes:
+
+        action["exclude_add"] = sorted(
+            existing_excludes
+            | requested_excludes
+        )
+
+        warnings.append(
+            "burger ADD 명시적 재료 제외 복구: "
+            + ", ".join(
+                sorted(
+                    missing_excludes
+                )
+            )
+        )
+
+    # --------------------------------------------------------
+    # topping 추가 복원
+    # --------------------------------------------------------
+
+    existing_toppings = set(
+        action.get(
+            "toppings_add",
+            [],
+        )
+        or []
+    )
+
+    missing_toppings = (
+        requested_toppings
+        - existing_toppings
+    )
+
+    if missing_toppings:
+
+        action["toppings_add"] = sorted(
+            existing_toppings
+            | requested_toppings
+        )
+
+        warnings.append(
+            "burger ADD 명시적 topping 복구: "
+            + ", ".join(
+                sorted(
+                    missing_toppings
+                )
+            )
+        )
+
+    try:
+
+        repaired = (
+            OrderUpdate.model_validate(
+                data
+            )
+        )
+
+    except Exception as e:
+
+        warnings.append(
+            "burger ADD modifier 복구 재검증 실패 -> "
+            f"원본 유지: {type(e).__name__}: {e}"
+        )
+
+        return update, warnings
+
+    return repaired, warnings
+
+
+def guard_topping_grounding(
+    utterance,
+    state,
+    update,
+):
+    """
+    LLM이 사용자가 말하지 않은 topping을
+    임의로 추가하지 못하게 한다.
+
+    toppings_add는 사용자 발화에 명시적으로
+    근거한 값만 허용한다.
+    """
+
+    warnings = []
+
+    if val(update.intent) != "order":
+        return update, warnings
+
+    requested = (
+        explicit_topping_add_values(
+            utterance
+        )
+    )
+
+    data = update.model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+
+    actions = data.get(
+        "actions",
+        [],
+    )
+
+    for index, action in enumerate(
+        actions,
+        start=1,
+    ):
+
+        toppings = set(
+            action.get(
+                "toppings_add",
+                [],
+            )
+            or []
+        )
+
+        if not toppings:
+            continue
+
+        allowed = (
+            toppings
+            &
+            requested
+        )
+
+        removed = (
+            toppings
+            -
+            allowed
+        )
+
+        if removed:
+
+            action["toppings_add"] = (
+                sorted(allowed)
+            )
+
+            warnings.append(
+                f"action[{index}] "
+                "근거 없는 topping 추가 차단: "
+                + ", ".join(
+                    sorted(removed)
+                )
+            )
+
+    try:
+
+        verified = (
+            OrderUpdate.model_validate(
+                data
+            )
+        )
+
+    except Exception as e:
+
+        warnings.append(
+            "topping grounding 재검증 실패 "
+            "-> 원본 유지: "
+            f"{type(e).__name__}: {e}"
+        )
+
+        return update, warnings
+
+    return verified, warnings
+
+
+
 FINALIZATION_KEYWORDS = (
     "마무리",
     "주문확정",
@@ -590,6 +1313,7 @@ FINALIZATION_KEYWORDS = (
     "주문끝",
     "주문종료",
     "끝낼게",
+    "끝낼게요"
 )
 
 PENDING_FIELD_NAME = {
@@ -932,6 +1656,233 @@ def guard_add_menu_grounding(
     return update, warnings
 
 
+
+def guard_add_nonburger_grounding(
+    utterance: str,
+    state,
+    update,
+):
+    """
+    신규 standalone drink / side ADD가
+    실제 사용자 발화에 근거했는지 검증한다.
+
+    막아야 하는 예:
+      아이스크림 -> iced_coffee
+      해쉬브라운 -> french_fries
+
+    허용:
+      콜라 주세요
+      아이스커피 주세요
+      감자튀김 주세요
+      치즈스틱 주세요
+      기존 상품 + "하나 더"
+    """
+
+    warnings = []
+
+    if val(update.intent) != "order":
+        return update, warnings
+
+    data = update.model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+
+    actions = data.get(
+        "actions",
+        [],
+    )
+
+    compact = compact_text(
+        utterance
+    )
+
+    contextual_repeat = any(
+        phrase in compact
+        for phrase in CONTEXTUAL_REPEAT_PHRASES
+    )
+
+    explicit_drinks = explicit_drink_values(
+        utterance
+    )
+
+    explicit_sides = explicit_side_values(
+        utterance
+    )
+
+    state_items = state.get(
+        "items",
+        [],
+    )
+
+    existing_drinks = {
+        item.get("drink")
+        for item in state_items
+        if (
+            item.get("item_type") == "drink"
+            and item.get("drink") is not None
+        )
+    }
+
+    existing_sides = {
+        item.get("side")
+        for item in state_items
+        if (
+            item.get("item_type") == "side"
+            and item.get("side") is not None
+        )
+    }
+
+    reductions = [
+        action
+        for action in actions
+        if (
+            action.get("operation")
+            == "adjust_quantity"
+            and action.get(
+                "quantity_delta",
+                0,
+            ) < 0
+        )
+    ]
+
+    for index, action in enumerate(
+        actions,
+        start=1,
+    ):
+
+        if action.get("operation") != "add":
+            continue
+
+        patch = action.get("item")
+
+        if not isinstance(
+            patch,
+            dict,
+        ):
+            continue
+
+        kind = patch.get(
+            "item_type"
+        )
+
+        if kind == "drink":
+
+            value = patch.get(
+                "drink"
+            )
+
+            grounded = explicit_drinks
+            existing = existing_drinks
+            field = "drink"
+
+        elif kind == "side":
+
+            value = patch.get(
+                "side"
+            )
+
+            grounded = explicit_sides
+            existing = existing_sides
+            field = "side"
+
+        else:
+            continue
+
+        if value is None:
+
+            raise ModelOutputError(
+                f"action[{index}]: "
+                f"신규 {kind}의 "
+                f"{field}가 누락되었습니다.",
+                code="UNGROUNDED_PRODUCT",
+                reply=(
+                    "주문하신 메뉴를 정확히 "
+                    "확인하지 못했습니다. "
+                    "메뉴를 다시 말씀해주세요."
+                ),
+            )
+
+        # 사용자가 실제 해당 메뉴를 말했다.
+        if value in grounded:
+            continue
+
+        # 사용자가 다른 지원 메뉴를 명시했는데
+        # LLM이 다른 상품으로 변경했다.
+        if grounded:
+
+            raise ModelOutputError(
+                f"action[{index}]: "
+                f"LLM {field}={value}, "
+                f"사용자 명시={sorted(grounded)}",
+                code="UNGROUNDED_PRODUCT",
+                reply=(
+                    "메뉴를 정확히 확인하지 못했습니다. "
+                    "주문 메뉴를 다시 말씀해주세요."
+                ),
+            )
+
+        # "하나 더" 같은 기존 주문 반복.
+        if (
+            contextual_repeat
+            and value in existing
+        ):
+            continue
+
+        # 기존 수량 일부를 분리하면서
+        # 같은 상품을 다시 add하는 내부 처리.
+        split_from_existing = False
+
+        if len(reductions) == 1:
+
+            reduction = reductions[0]
+
+            target = (
+                reduction.get("target")
+                or {}
+            )
+
+            source = next(
+                (
+                    item
+                    for item in state_items
+                    if item.get("line_id")
+                    == target.get("line_id")
+                ),
+                None,
+            )
+
+            if (
+                source
+                and source.get("item_type")
+                == kind
+                and source.get(field)
+                == value
+                and patch.get("quantity")
+                == -reduction.get(
+                    "quantity_delta",
+                    0,
+                )
+            ):
+                split_from_existing = True
+
+        if split_from_existing:
+            continue
+
+        raise ModelOutputError(
+            f"action[{index}]: "
+            f"사용자 발화에 근거 없는 신규 "
+            f"{kind} {field}={value}",
+            code="UNGROUNDED_PRODUCT",
+            reply=(
+                "해당 메뉴를 정확히 확인하지 못했습니다. "
+                "현재 메뉴판에 있는 메뉴로 주문해주세요."
+            ),
+        )
+
+    return update, warnings
+
+
 def explicit_type_values(text: str):
     return _extract_values(text, TYPE_ALIASES)
 
@@ -1134,6 +2085,601 @@ def ordered_values_for_field(utterance: str, field: str):
 def is_correction_utterance(utterance: str) -> bool:
     raw = compact_text(utterance)
     return any(word in raw for word in CORRECTION_WORDS)
+
+
+
+# === ASZ CORRECTION PRIORITY PATCH START ===
+
+def _explicit_values_with_correction_priority(
+    utterance: str,
+    field: str,
+    alias_map,
+):
+    """
+    'A 말고 B', 'A 아니고 B', 'A 대신 B'처럼
+    정정 표현이 있으면 정정 표현 뒤의 값을 우선한다.
+
+    예:
+        콜라 말고 제로콜라
+            -> zero_coke
+
+        감자튀김 말고 치즈스틱
+            -> cheese_stick
+
+        콜라랑 사이다
+            -> coke + sprite
+            (정정 표현이 없으므로 둘 다 유지)
+
+    다른 필드에 있는 '말고' 때문에 잘못 영향을 받지 않도록,
+    correction marker 뒤에 실제 해당 field 값이 있는 경우만 적용한다.
+    """
+
+    # 긴 alias 우선 + 겹치는 alias 제거
+    # "제로콜라" 안의 "콜라"를 별도 coke로 잡지 않는다.
+    base_values = set(
+        _ordered_alias_values(
+            utterance,
+            alias_map,
+        )
+    )
+
+    raw = compact_text(
+        utterance
+    )
+
+    correction_positions = []
+
+    for word in CORRECTION_WORDS:
+
+        start = 0
+
+        while True:
+
+            index = raw.find(
+                word,
+                start,
+            )
+
+            if index < 0:
+                break
+
+            correction_positions.append(
+                (
+                    index,
+                    word,
+                )
+            )
+
+            start = (
+                index
+                + len(word)
+            )
+
+
+    # 뒤쪽 correction부터 검사한다.
+    # 단, 해당 field 값이 실제 뒤에 있어야 그 correction을 사용한다.
+    correction_positions.sort(
+        key=lambda x: x[0],
+        reverse=True,
+    )
+
+
+    for index, word in correction_positions:
+
+        tail = raw[
+            index + len(word):
+        ]
+
+        corrected_values = (
+            _ordered_alias_values(
+                tail,
+                alias_map,
+            )
+        )
+
+        if corrected_values:
+
+            return set(
+                corrected_values
+            )
+
+
+    return base_values
+
+
+def explicit_drink_values(text: str):
+    """
+    음료 grounding.
+
+    제로콜라 내부의 '콜라' 중복 검출 방지 +
+    '콜라 말고 제로콜라'에서는 최종 제로콜라 우선.
+    """
+
+    return (
+        _explicit_values_with_correction_priority(
+            text,
+            "drink",
+            DRINK_ALIASES,
+        )
+    )
+
+
+def explicit_side_values(text: str):
+    """
+    사이드 grounding.
+
+    '감자튀김 말고 치즈스틱'이면
+    최종 치즈스틱을 우선한다.
+    """
+
+    return (
+        _explicit_values_with_correction_priority(
+            text,
+            "side",
+            SIDE_ALIASES,
+        )
+    )
+
+
+# === ASZ CORRECTION PRIORITY PATCH END ===
+
+
+# === ASZ SELF CORRECTION + PENDING GUARD ===
+
+SELF_CORRECTION_MARKERS = (
+    # 기존 정정 표현
+    "말고",
+    "아니고",
+    "대신",
+    "변경",
+    "바꿔",
+    "바꾸",
+
+    # 실제 음성 주문에서 자주 나오는 self-correction
+    "아아니다",
+    "아니다",
+    "아니아니다",
+    "아아니",
+    "아니",
+    "아니요",
+    "아잠깐",
+    "잠깐",
+)
+
+
+def _correction_tail(text: str):
+    """
+    마지막 self-correction 표현 뒤의 발화를 반환한다.
+
+    예:
+        "감자튀김이랑 사이다 아 아니다
+         치즈스틱이랑 제로콜라 라지로 주세요"
+
+        ->
+        "치즈스틱이랑제로콜라라지로주세요"
+
+    정정 표현이 없으면 None.
+    """
+
+    raw = compact_text(text)
+
+    candidates = []
+
+    for marker in SELF_CORRECTION_MARKERS:
+
+        start = 0
+
+        while True:
+
+            index = raw.find(
+                marker,
+                start,
+            )
+
+            if index < 0:
+                break
+
+            tail_start = (
+                index
+                + len(marker)
+            )
+
+            candidates.append(
+                (
+                    tail_start,
+                    raw[tail_start:],
+                )
+            )
+
+            start = index + 1
+
+
+    if not candidates:
+        return None
+
+
+    # 가장 마지막 정정 표현을 우선한다.
+    candidates.sort(
+        key=lambda x: x[0],
+        reverse=True,
+    )
+
+
+    for _, tail in candidates:
+
+        if tail:
+            return tail
+
+
+    return None
+
+
+def _explicit_with_self_correction(
+    text: str,
+    alias_map,
+):
+    """
+    정정 표현 뒤에 해당 field 값이 있으면
+    앞에서 말한 값을 폐기하고 뒤의 값만 사용한다.
+
+    정정 표현 뒤에 해당 field 값이 하나도 없으면
+    원래 전체 발화를 사용한다.
+    """
+
+    # === ASZ CHANGE TARGET PRIORITY ===
+    # "감자튀김 치즈스틱으로 바꿔주세요"
+    # "콜라 제로콜라로 변경해주세요"
+    # 처럼 A -> B 변경 표현이면 마지막에 말한 B가 최종값이다.
+    raw = compact_text(text)
+
+    ordered_values = _ordered_alias_values(
+        text,
+        alias_map,
+    )
+
+    if (
+        len(ordered_values) >= 2
+        and re.search(
+            r"(?:로|으로)(?:변경|바꿔|바꾸)",
+            raw,
+        )
+    ):
+        return {
+            ordered_values[-1]
+        }
+
+    tail = _correction_tail(text)
+
+    if tail:
+
+        corrected = set(
+            _ordered_alias_values(
+                tail,
+                alias_map,
+            )
+        )
+
+        if corrected:
+            return corrected
+
+
+    return set(
+        _ordered_alias_values(
+            text,
+            alias_map,
+        )
+    )
+
+
+# 아래 함수들은 앞에서 정의된 동명의 함수를
+# 의도적으로 override한다.
+
+
+def explicit_type_values(text: str):
+
+    return _explicit_with_self_correction(
+        text,
+        TYPE_ALIASES,
+    )
+
+
+def explicit_drink_values(text: str):
+
+    return _explicit_with_self_correction(
+        text,
+        DRINK_ALIASES,
+    )
+
+
+def explicit_size_values(text: str):
+
+    return _explicit_with_self_correction(
+        text,
+        SIZE_ALIASES,
+    )
+
+
+def explicit_side_values(text: str):
+
+    return _explicit_with_self_correction(
+        text,
+        SIDE_ALIASES,
+    )
+
+
+def repair_pending_option_bundle(
+    utterance,
+    state,
+    pending,
+    update,
+):
+    """
+    현재 세트/음료의 옵션을 질문 중인데 사용자가
+    한 문장에서 여러 옵션을 답한 경우 deterministic하게 처리한다.
+
+    가장 중요한 목적:
+        pending=(line 1, drink)
+
+        사용자:
+        "감자튀김이랑 사이다 아 아니다
+         치즈스틱이랑 제로콜라 라지로 주세요"
+
+        LLM이 새 burger add를 만들어도 무시하고
+
+        modify line 1:
+            drink=zero_coke
+            drink_size=large
+            side=cheese_stick
+
+        로 바꾼다.
+
+    보호 조건:
+    - 실제 pending이 존재
+    - pending field가 type/drink/drink_size/side
+    - 현재 pending 상품이 존재
+    - pending field에 대한 답이 발화에 정확히 하나 존재
+    - 다른 버거를 명시적으로 새로 주문한 상황은 건드리지 않음
+    """
+
+    warnings = []
+
+
+    if pending is None:
+        return update, warnings
+
+
+    pending_line_id, pending_field = pending
+
+
+    if pending_field not in {
+        "type",
+        "drink",
+        "drink_size",
+        "side",
+    }:
+        return update, warnings
+
+
+    pending_item = next(
+        (
+            item
+            for item in state.get(
+                "items",
+                [],
+            )
+            if item.get("line_id")
+            == pending_line_id
+        ),
+        None,
+    )
+
+
+    if pending_item is None:
+        return update, warnings
+
+
+    # --------------------------------------------------------
+    # "치킨버거 하나 추가"처럼 실제 새 버거 주문이면
+    # pending override를 하지 않는다.
+    # --------------------------------------------------------
+
+    explicit_menus = grounded_menu_values(
+        utterance
+    )
+
+
+    current_menu = pending_item.get(
+        "menu"
+    )
+
+
+    other_menus = {
+        menu
+        for menu in explicit_menus
+        if menu != current_menu
+    }
+
+
+    if other_menus:
+        return update, warnings
+
+
+    compact = compact_text(
+        utterance
+    )
+
+
+    # "하나 추가", "한 개 추가", "하나 더" 같은
+    # 명백한 추가 주문은 LLM의 일반 처리에 맡긴다.
+    explicit_new_item_request = any(
+        phrase in compact
+        for phrase in (
+            "하나추가",
+            "한개추가",
+            "두개추가",
+            "세개추가",
+            "하나더",
+            "한개더",
+            "두개더",
+            "세개더",
+        )
+    )
+
+
+    if explicit_new_item_request:
+        return update, warnings
+
+
+    explicit = {
+        "type":
+            explicit_type_values(
+                utterance
+            ),
+
+        "drink":
+            explicit_drink_values(
+                utterance
+            ),
+
+        "drink_size":
+            explicit_size_values(
+                utterance
+            ),
+
+        "side":
+            explicit_side_values(
+                utterance
+            ),
+    }
+
+
+    # 현재 질문에 대한 명확한 답이 반드시 있어야 한다.
+    pending_candidates = explicit.get(
+        pending_field,
+        set(),
+    )
+
+
+    if len(pending_candidates) != 1:
+        return update, warnings
+
+
+    patch = {}
+
+
+    # 한 문장에서 같이 답한 옵션도 한 번에 적용
+    for field in (
+        "type",
+        "drink",
+        "drink_size",
+        "side",
+    ):
+
+        candidates = explicit.get(
+            field,
+            set(),
+        )
+
+        if len(candidates) == 1:
+
+            patch[field] = next(
+                iter(candidates)
+            )
+
+
+    if not patch:
+        return update, warnings
+
+
+    action = {
+        "operation": "modify",
+
+        "target": {
+            "line_id":
+                pending_line_id,
+        },
+
+        "item":
+            patch,
+
+        "apply_to_all":
+            False,
+    }
+
+
+    # 같은 발화에서 "피클 빼주세요"도 말했다면 보존
+    try:
+
+        excludes = (
+            explicit_exclude_request_values(
+                utterance
+            )
+        )
+
+        if excludes:
+
+            action["exclude_add"] = sorted(
+                excludes
+            )
+
+    except Exception:
+
+        pass
+
+
+    # topping guard가 이미 존재한다면
+    # 명시적으로 말한 topping도 보존
+    try:
+
+        toppings = (
+            explicit_topping_add_values(
+                utterance
+            )
+        )
+
+        if toppings:
+
+            action["toppings_add"] = sorted(
+                toppings
+            )
+
+    except Exception:
+
+        pass
+
+
+    try:
+
+        repaired = (
+            OrderUpdate.model_validate({
+                "intent":
+                    "order",
+
+                "actions": [
+                    action
+                ],
+            })
+        )
+
+    except Exception as e:
+
+        warnings.append(
+            "pending option bundle 재검증 실패 -> "
+            f"LLM 출력 유지: {type(e).__name__}: {e}"
+        )
+
+        return update, warnings
+
+
+    warnings.append(
+        "pending option bundle deterministic 보정: "
+        f"line_id={pending_line_id}, "
+        f"patch={patch}"
+    )
+
+
+    return repaired, warnings
+
 
 
 def explicit_values_by_field(utterance: str):
@@ -1420,11 +2966,150 @@ def verify_semantics(utterance: str, state, pending, update):
 
             # 메뉴 언급에는 변경 전 대상도 포함된다. 문맥 해석은 LLM에 맡긴다.
             # 대상/상품 종류 검증은 상태 적용 단계에서 수행한다.
-            for field in ("type", "drink", "drink_size", "side"):
+            #
+            # 여러 modify action이 한 발화에 함께 있을 때 explicit 값은
+            # utterance 전체에서 추출된 global 값이다.
+            #
+            # 따라서 다른 action에 속한 "세트/단품" 표현이 현재 action의
+            # type을 오염시키지 않도록, Runtime이 현재 target line의 기존
+            # type을 그대로 보존해서 출력한 경우에는 global type 값으로
+            # 강제 보정하지 않는다.
+            target = action.get("target") or {}
+            target_line_id = target.get("line_id")
+
+            target_state_item = None
+            if target_line_id is not None:
+                target_state_item = next(
+                    (
+                        x
+                        for x in state.get("items", [])
+                        if x.get("line_id") == target_line_id
+                    ),
+                    None,
+                )
+
+            # 기본적으로는 발화 전체 explicit 값을 사용한다.
+            action_explicit = explicit
+
+            # ------------------------------------------------
+            # MULTI-MODIFY ACTION-LOCAL OPTION GROUNDING
+            # ------------------------------------------------
+            #
+            # 한 발화에 여러 modify가 있고 특정 burger menu가
+            # 정확히 하나 명시된 경우, type/drink/drink_size/side는
+            # 그 menu가 grounding된 line에만 귀속시킨다.
+            #
+            # 예:
+            #   "치즈 추가해주시고
+            #    아까 불고기버거에 콜라 라지로 바꿔주세요"
+            #
+            # 여기서 coke/large는 불고기버거 line에만 적용되어야
+            # 하며 contextual topping 대상인 다른 burger line으로
+            # 전파되면 안 된다.
+            if modify_count > 1:
+                grounded_menus = grounded_menu_values(
+                    utterance
+                )
+
+                if len(grounded_menus) == 1:
+                    explicit_menu = next(
+                        iter(grounded_menus)
+                    )
+
+                    grounded_line_ids = set()
+
+                    for candidate_action in actions:
+                        if (
+                            candidate_action.get("operation")
+                            != "modify"
+                        ):
+                            continue
+
+                        candidate_target = (
+                            candidate_action.get("target")
+                            or {}
+                        )
+
+                        candidate_line_id = (
+                            candidate_target.get("line_id")
+                        )
+
+                        if candidate_line_id is None:
+                            continue
+
+                        candidate_state_item = next(
+                            (
+                                x
+                                for x in state.get(
+                                    "items",
+                                    [],
+                                )
+                                if x.get("line_id")
+                                == candidate_line_id
+                            ),
+                            None,
+                        )
+
+                        if (
+                            candidate_state_item is not None
+                            and candidate_state_item.get(
+                                "item_type"
+                            )
+                            == "burger"
+                            and candidate_state_item.get(
+                                "menu"
+                            )
+                            == explicit_menu
+                        ):
+                            grounded_line_ids.add(
+                                candidate_line_id
+                            )
+
+                    # 명시 menu가 정확히 하나의 modify target line으로
+                    # grounding된 경우에만 다른 line의 global option
+                    # 후보를 차단한다.
+                    if (
+                        len(grounded_line_ids) == 1
+                        and target_line_id
+                        not in grounded_line_ids
+                    ):
+                        action_explicit = dict(
+                            explicit
+                        )
+
+                        for scoped_field in (
+                            "type",
+                            "drink",
+                            "drink_size",
+                            "side",
+                        ):
+                            action_explicit[
+                                scoped_field
+                            ] = set()
+
+            for field in (
+                "type",
+                "drink",
+                "drink_size",
+                "side",
+            ):
+                # Runtime이 현재 target state 값을 그대로 echo한
+                # no-op field는 multi-modify에서도 안전하게 보존한다.
+                preserve_existing_value = (
+                    modify_count > 1
+                    and target_state_item is not None
+                    and patch.get(field) is not None
+                    and patch.get(field)
+                    == target_state_item.get(field)
+                )
+
+                if preserve_existing_value:
+                    continue
+
                 _set_or_remove_field(
                     patch,
                     field,
-                    explicit,
+                    action_explicit,
                     warnings,
                     prefix,
                     fill_missing=fill_missing,
@@ -1502,6 +3187,174 @@ def verify_semantics(utterance: str, state, pending, update):
                     fill_missing=fill_add_missing,
                 )
 
+
+    # ========================================================
+    # SINGLE BURGER + STANDALONE EXTRAS REPAIR
+    # ========================================================
+    #
+    # 예:
+    #   "불고기버거 단품 하나 콜라 라지 하나 주세요"
+    #
+    # 잘못된 LLM:
+    #   burger(type=single, drink=coke, drink_size=large)
+    #
+    # 정상:
+    #   burger(type=single)
+    #   + standalone drink(coke, large)
+    #
+    # 단품에는 drink/side가 종속될 수 없으므로
+    # 고객이 명시한 별도 품목으로 분리한다.
+    #
+    # 수량 2개 이상이 섞인 복잡한 주문은 여기서 추측하지 않고
+    # 기존 V14 경로에 맡긴다.
+    # ========================================================
+
+    if (
+        pending is None
+        and len(actions) == 1
+    ):
+        only_action = actions[0]
+
+        only_patch = only_action.get(
+            "item"
+        )
+
+        if (
+            only_action.get("operation") == "add"
+            and isinstance(only_patch, dict)
+            and only_patch.get("item_type") == "burger"
+            and only_patch.get("type") == "single"
+            and len(explicit.get("menu", set())) == 1
+        ):
+
+            raw_text = normalize_text(
+                utterance
+            ).lower()
+
+            # 서로 다른 품목에 2개 이상 수량이 들어간 경우는
+            # 여기서 임의 분리하지 않는다.
+            complex_quantity = bool(
+                re.search(
+                    r"(?:[2-9]\d*|두|둘|세|셋|네|넷|"
+                    r"다섯|여섯|일곱|여덟|아홉|열)"
+                    r"\s*(?:개|잔|세트)",
+                    raw_text,
+                )
+            )
+
+            spawned = []
+
+            if not complex_quantity:
+
+                # --------------------------------------------
+                # standalone drink
+                # --------------------------------------------
+
+                drinks = explicit.get(
+                    "drink",
+                    set(),
+                )
+
+                sizes = explicit.get(
+                    "drink_size",
+                    set(),
+                )
+
+                if len(drinks) == 1:
+
+                    drink = next(
+                        iter(drinks)
+                    )
+
+                    drink_item = {
+                        "item_type": "drink",
+                        "quantity": 1,
+                        "drink": drink,
+                    }
+
+                    if len(sizes) == 1:
+                        drink_item[
+                            "drink_size"
+                        ] = next(
+                            iter(sizes)
+                        )
+
+                    spawned.append(
+                        {
+                            "operation": "add",
+                            "item": drink_item,
+                        }
+                    )
+
+                # --------------------------------------------
+                # standalone side
+                # --------------------------------------------
+
+                sides = explicit.get(
+                    "side",
+                    set(),
+                )
+
+                # "감튀 빼고" 같은 표현을
+                # 신규 사이드 주문으로 만들지 않는다.
+                negative_side = bool(
+                    re.search(
+                        r"(빼고|제외|말고)",
+                        compact_text(
+                            utterance
+                        ),
+                    )
+                )
+
+                if (
+                    len(sides) == 1
+                    and not negative_side
+                ):
+
+                    side = next(
+                        iter(sides)
+                    )
+
+                    spawned.append(
+                        {
+                            "operation": "add",
+                            "item": {
+                                "item_type": "side",
+                                "quantity": 1,
+                                "side": side,
+                            },
+                        }
+                    )
+
+            if spawned:
+
+                # 단품 burger 내부에서는 제거
+                only_patch.pop(
+                    "drink",
+                    None,
+                )
+
+                only_patch.pop(
+                    "drink_size",
+                    None,
+                )
+
+                only_patch.pop(
+                    "side",
+                    None,
+                )
+
+                actions.extend(
+                    spawned
+                )
+
+                data["actions"] = actions
+
+                warnings.append(
+                    "single burger에 잘못 종속된 "
+                    "명시 음료/사이드를 standalone item으로 분리"
+                )
+
     try:
         verified = OrderUpdate.model_validate(data)
     except Exception as e:
@@ -1564,6 +3417,275 @@ def verify_add_quantity(utterance: str, update):
             f"quantity verifier 재검증 실패 -> 원본 유지: {type(e).__name__}: {e}"
         )
         return update, warnings
+
+
+
+# === ASZ EXPLICIT QUANTITY ADD GUARD ===
+
+def repair_explicit_quantity_add(
+    utterance,
+    state,
+    pending,
+    update,
+):
+    """
+    명확한 단일 품목 + 명시 수량 주문을 deterministic하게 보정한다.
+
+    예:
+        치즈스틱 10개 주세요
+        감자튀김 12개 주세요
+        콜라 5잔 주세요
+        불고기버거 10개 주세요
+        불고기버거 세트 10개 주세요
+
+    중요한 보호 규칙:
+    - "10개 가능할까요?" 같은 질문은 주문으로 바꾸지 않는다.
+    - 한 문장에 여러 서로 다른 품목이 있으면 여기서 강제로 해석하지 않는다.
+    - 단일 품목 주문만 보정한다.
+    """
+
+    warnings = []
+
+    quantity = extract_explicit_quantity(
+        utterance
+    )
+
+    if quantity is None:
+        return update, warnings
+
+    # 1개는 기존 V14 처리를 그대로 사용.
+    # 여기서는 주로 2개 이상의 명시 수량을 강하게 보정한다.
+    if quantity < 2:
+        return update, warnings
+
+
+    compact = compact_text(
+        utterance
+    )
+
+    # --------------------------------------------------------
+    # 감소 / 삭제 요청 보호
+    #
+    # repair_explicit_quantity_add()는 신규 수량 추가 주문만
+    # 보정해야 한다.
+    #
+    # 예:
+    #   치즈스틱 3개 빼주세요
+    #   치즈스틱 3개 취소해주세요
+    #   치즈스틱 3개 삭제해주세요
+    #   치즈스틱 3개 안 먹을래
+    #
+    # 위 발화를 "주세요"라는 부분 문자열만 보고
+    # add 3으로 덮어쓰면 안 된다.
+    # --------------------------------------------------------
+
+    negative_quantity_request = any(
+        marker in compact
+        for marker in (
+            "빼",
+            "취소",
+            "삭제",
+            "제거",
+            "줄여",
+            "감소",
+            "안먹",
+        )
+    )
+
+    if negative_quantity_request:
+        return update, warnings
+
+
+    # --------------------------------------------------------
+    # 질문 문장을 실제 주문으로 만들어버리지 않도록 보호
+    # --------------------------------------------------------
+
+    question_markers = (
+        "가능할까요",
+        "가능해요",
+        "가능한가요",
+        "될까요",
+        "되나요",
+        "되겠어요",
+        "할수있",
+        "할수있나요",
+        "있나요",
+        "추천",
+    )
+
+    if any(
+        marker in compact
+        for marker in question_markers
+    ):
+        return update, warnings
+
+
+    # --------------------------------------------------------
+    # 주문 의도가 어느 정도 명확해야 한다.
+    # --------------------------------------------------------
+
+    request_markers = (
+        "주세요",
+        "주세",
+        "줘",
+        "주문",
+        "추가",
+        "더주세요",
+        "더줘",
+        "담아",
+        "넣어",
+    )
+
+    explicit_request = any(
+        marker in compact
+        for marker in request_markers
+    )
+
+    # "치즈스틱 10개", "콜라 5잔요" 같은 축약 주문도 허용
+    quantity_ending = bool(
+        re.search(
+            r"(?:개|잔|세트)(?:요)?$",
+            compact,
+        )
+    )
+
+    if not explicit_request and not quantity_ending:
+        return update, warnings
+
+
+    menus = explicit_menu_values(
+        utterance
+    )
+
+    drinks = explicit_drink_values(
+        utterance
+    )
+
+    sides = explicit_side_values(
+        utterance
+    )
+
+
+    # --------------------------------------------------------
+    # 한 문장에 여러 품목 종류가 섞여 있으면
+    # V14 일반 경로에 맡긴다.
+    #
+    # 예:
+    #   불고기버거 2개랑 콜라 3잔
+    # --------------------------------------------------------
+
+    product_groups = sum([
+        bool(menus),
+        bool(drinks),
+        bool(sides),
+    ])
+
+    if product_groups != 1:
+        return update, warnings
+
+
+    item = {
+        "quantity": quantity,
+    }
+
+
+    # --------------------------------------------------------
+    # BURGER
+    # --------------------------------------------------------
+
+    if menus:
+
+        if len(menus) != 1:
+            return update, warnings
+
+        item["item_type"] = "burger"
+        item["menu"] = next(
+            iter(menus)
+        )
+
+        types = explicit_type_values(
+            utterance
+        )
+
+        if len(types) == 1:
+            item["type"] = next(
+                iter(types)
+            )
+
+
+    # --------------------------------------------------------
+    # DRINK
+    # --------------------------------------------------------
+
+    elif drinks:
+
+        if len(drinks) != 1:
+            return update, warnings
+
+        item["item_type"] = "drink"
+        item["drink"] = next(
+            iter(drinks)
+        )
+
+        sizes = explicit_size_values(
+            utterance
+        )
+
+        if len(sizes) == 1:
+            item["drink_size"] = next(
+                iter(sizes)
+            )
+
+
+    # --------------------------------------------------------
+    # SIDE
+    # --------------------------------------------------------
+
+    elif sides:
+
+        if len(sides) != 1:
+            return update, warnings
+
+        item["item_type"] = "side"
+        item["side"] = next(
+            iter(sides)
+        )
+
+
+    else:
+        return update, warnings
+
+
+    try:
+
+        repaired = OrderUpdate.model_validate({
+            "intent": "order",
+
+            "actions": [
+                {
+                    "operation": "add",
+                    "item": item,
+                }
+            ],
+        })
+
+    except Exception as e:
+
+        warnings.append(
+            "explicit quantity add 재검증 실패 -> "
+            f"LLM 출력 유지: {type(e).__name__}: {e}"
+        )
+
+        return update, warnings
+
+
+    warnings.append(
+        "explicit quantity deterministic 보정: "
+        f"item={item}"
+    )
+
+    return repaired, warnings
+
 
 
 # ============================================================
@@ -1644,12 +3766,109 @@ def build_pending_group_update(utterance: str, state, pending, manager):
     # --------------------------------------------------------
     # A) 이미 이전 턴에서 quantity를 여러 line으로 분리한 option group
     # --------------------------------------------------------
-    group_ids = manager.option_group_for(line_id)
-    if len(group_ids) > 1:
-        group_items = [
-            x for x in sorted(items, key=lambda y: y.get("line_id", 0))
-            if x.get("line_id") in group_ids and x.get(field) is None
-        ]
+    group_ids = manager.option_group_for(
+        line_id
+    )
+
+    def same_pending_family(
+        candidate,
+    ):
+
+        if (
+            candidate.get(
+                "item_type"
+            )
+            != item.get(
+                "item_type"
+            )
+        ):
+            return False
+
+        kind = item.get(
+            "item_type"
+        )
+
+        if kind == "burger":
+
+            return (
+                candidate.get(
+                    "menu"
+                )
+                == item.get(
+                    "menu"
+                )
+                and
+                candidate.get(
+                    "type"
+                )
+                == item.get(
+                    "type"
+                )
+            )
+
+        if kind == "drink":
+
+            return (
+                candidate.get(
+                    "drink"
+                )
+                == item.get(
+                    "drink"
+                )
+            )
+
+        if kind == "side":
+
+            return (
+                candidate.get(
+                    "side"
+                )
+                == item.get(
+                    "side"
+                )
+            )
+
+        return False
+
+
+    group_items = [
+        x
+        for x in sorted(
+            items,
+            key=lambda y:
+                y.get(
+                    "line_id",
+                    0,
+                ),
+        )
+        if (
+            x.get(
+                "line_id"
+            )
+            in group_ids
+
+            and
+            x.get(
+                field
+            )
+            is None
+
+            and
+            same_pending_family(
+                x
+            )
+        )
+    ]
+
+
+    # 실제로 같은 옵션을 공유해야 하는 line이
+    # 둘 이상일 때만 multi-option group 처리.
+    #
+    # 예:
+    #   set + set    -> group 유지
+    #   set + single -> 서로 다른 상품 구성,
+    #                   pending line 하나만 처리
+    if len(group_items) > 1:
 
         if not group_items:
             return None, warnings, None
@@ -1938,6 +4157,7 @@ class OrderStateManager:
         self.option_groups = {}
         self.last_selected_ids = []
         self._line_id_counter = 0
+        self.last_line_id_map = {}
 
     def reset(self):
         self.state = empty_state()
@@ -1945,6 +4165,7 @@ class OrderStateManager:
         self.option_groups = {}
         self.last_selected_ids = []
         self._line_id_counter = 0
+        self.last_line_id_map = {}
 
     def register_option_group(self, line_ids):
         group = tuple(sorted(set(int(x) for x in line_ids)))
@@ -1983,6 +4204,30 @@ class OrderStateManager:
         current = max((x["line_id"] for x in self.state["items"]), default=0)
         self._line_id_counter = max(self._line_id_counter, current) + 1
         return self._line_id_counter
+
+    def renumber_items(self):
+        """Commit display/selection numbers only after the whole action batch.
+
+        A request removing old 3 and old 4 must resolve both original targets
+        before the remaining items receive their new consecutive numbers.
+        """
+        items = sorted(self.state["items"], key=lambda item: item["line_id"])
+        mapping = {item["line_id"]: number for number, item in enumerate(items, 1)}
+        self.option_groups = {
+            mapping[line_id]: tuple(mapping[member] for member in group if member in mapping)
+            for line_id, group in self.option_groups.items() if line_id in mapping
+        }
+        self.last_selected_ids = [mapping[line_id] for line_id in self.last_selected_ids
+                                  if line_id in mapping]
+        if self.pending is not None:
+            line_id, field = self.pending
+            self.pending = (mapping[line_id], field) if line_id in mapping else None
+        for item in items:
+            item["line_id"] = mapping[item["line_id"]]
+        self.state["items"] = items
+        self._line_id_counter = len(items)
+        self.last_line_id_map = mapping
+        self.cleanup_option_groups()
 
     def expand_individual_items(self):
         """상품을 한 개씩 유지하고 기존 ID는 변경하지 않는다."""
@@ -2091,6 +4336,7 @@ class OrderStateManager:
         try:
             self._apply_unchecked(update)
             self.validate_items(self.state["items"])
+            self.renumber_items()
         except Exception:
             self.__dict__.clear()
             self.__dict__.update(snapshot)
@@ -2161,9 +4407,38 @@ class OrderStateManager:
                 })
 
                 self.validate_items([new_item])
-                self.state["items"].append(new_item)
-                selected_ids.append(new_item["line_id"])
-                selected_ids.extend(self.expand_individual_items())
+                root_line_id = (
+                    new_item["line_id"]
+                )
+
+                self.state["items"].append(
+                    new_item
+                )
+
+                selected_ids.append(
+                    root_line_id
+                )
+
+                added_ids = (
+                    self.expand_individual_items()
+                )
+
+                selected_ids.extend(
+                    added_ids
+                )
+
+                # 동일한 quantity 주문에서 분리된 line들은
+                # 이후 drink / size / side pending 응답을
+                # 함께 분배할 수 있도록 같은 option group으로 유지.
+                if added_ids:
+
+                    self.register_option_group(
+                        [
+                            root_line_id,
+                            *added_ids,
+                        ]
+                    )
+
                 continue
 
             target_items = self.targets(
@@ -2210,16 +4485,104 @@ class OrderStateManager:
                 if delta is None:
                     raise ModelOutputError("quantity_delta 없음")
 
+                delta = int(delta)
+
+                # ==================================================
+                # quantity>1 주문은 내부적으로 quantity=1짜리
+                # 여러 line으로 펼쳐져 있다.
+                #
+                # 예:
+                #   치즈스틱 5개
+                #     -> line 1~5 각각 quantity=1
+                #
+                #   "치즈스틱 3개 빼주세요"
+                #     -> target line 하나 + quantity_delta=-3
+                #
+                # 따라서 한 line에 -3을 적용하는 것이 아니라
+                # 동일 signature의 line 3개를 제거해야 한다.
+                # ==================================================
+
+                if (
+                    delta < 0
+                    and len(target_items) == 1
+                    and int(
+                        target_items[0].get(
+                            "quantity",
+                            1,
+                        )
+                    ) == 1
+                ):
+                    remove_count = abs(delta)
+
+                    anchor = target_items[0]
+                    anchor_signature = signature(
+                        anchor
+                    )
+
+                    same_items = [
+                        item
+                        for item in self.state["items"]
+                        if signature(item)
+                        == anchor_signature
+                    ]
+
+                    if remove_count > len(
+                        same_items
+                    ):
+                        raise RecoverableOrderError(
+                            "현재 주문 수량보다 많이 "
+                            "뺄 수 없습니다."
+                        )
+
+                    # Router/Runtime이 선택한 line을 먼저 제거하고,
+                    # 나머지는 line_id 순서대로 제거한다.
+                    same_items.sort(
+                        key=lambda item: (
+                            0
+                            if item["line_id"]
+                            == anchor["line_id"]
+                            else 1,
+                            item["line_id"],
+                        )
+                    )
+
+                    remove_ids = {
+                        item["line_id"]
+                        for item
+                        in same_items[
+                            :remove_count
+                        ]
+                    }
+
+                    self.state["items"] = [
+                        item
+                        for item in self.state[
+                            "items"
+                        ]
+                        if item["line_id"]
+                        not in remove_ids
+                    ]
+
+                    continue
+
+                # 기존 일반 quantity 조정
                 remove_ids = set()
+
                 for item in target_items:
-                    item["quantity"] += int(delta)
+                    item["quantity"] += delta
+
                     if item["quantity"] <= 0:
-                        remove_ids.add(item["line_id"])
+                        remove_ids.add(
+                            item["line_id"]
+                        )
 
                 self.state["items"] = [
-                    x for x in self.state["items"]
-                    if x["line_id"] not in remove_ids
+                    x
+                    for x in self.state["items"]
+                    if x["line_id"]
+                    not in remove_ids
                 ]
+
                 continue
 
             if op == "remove":
@@ -2382,6 +4745,20 @@ class DriveThruRuntime:
         update = OrderUpdate.model_validate(repaired)
 
         # ----------------------------------------------------
+        # 0-A. 명시적 단일 품목 대량 수량 보정
+        #      예: "치즈스틱 10개 주세요"
+        # ----------------------------------------------------
+        update, explicit_quantity_warnings = repair_explicit_quantity_add(
+            utterance,
+            before,
+            pending_before,
+            update,
+        )
+        warnings.extend(
+            explicit_quantity_warnings
+        )
+
+        # ----------------------------------------------------
         # 1. 모바일 주문번호 deterministic verifier
         # ----------------------------------------------------
         update, mobile_warnings = verify_order_id(
@@ -2390,6 +4767,23 @@ class DriveThruRuntime:
             update,
         )
         warnings.extend(mobile_warnings)
+
+        # === ASZ PENDING BUNDLE PIPELINE ===
+        # ----------------------------------------------------
+        # 1-0. pending 옵션 응답 deterministic 처리
+        #
+        # LLM이 현재 옵션 질문 중 새 burger를 hallucination해도
+        # 실제 pending line의 modify로 보정한다.
+        # ----------------------------------------------------
+        update, pending_bundle_warnings = repair_pending_option_bundle(
+            utterance,
+            before,
+            pending_before,
+            update,
+        )
+        warnings.extend(
+            pending_bundle_warnings
+        )
 
         # ----------------------------------------------------
         # 1-1. 신규 burger menu closed-world grounding
@@ -2402,6 +4796,23 @@ class DriveThruRuntime:
         warnings.extend(grounding_warnings)
 
         # ----------------------------------------------------
+        # 1-2. 신규 standalone drink / side
+        #      closed-world grounding
+        # ----------------------------------------------------
+
+        update, nonburger_grounding_warnings = (
+            guard_add_nonburger_grounding(
+                utterance,
+                before,
+                update,
+            )
+        )
+
+        warnings.extend(
+            nonburger_grounding_warnings
+        )
+
+        # ----------------------------------------------------
         # 2. 메뉴/옵션 semantic verifier
         # ----------------------------------------------------
         update, semantic_warnings = verify_semantics(
@@ -2412,7 +4823,54 @@ class DriveThruRuntime:
         )
         warnings.extend(semantic_warnings)
 
-                # ----------------------------------------------------
+        # ----------------------------------------------------
+        # 2-A. 사용자가 말하지 않은 topping hallucination 차단
+        # ----------------------------------------------------
+        update, topping_warnings = guard_topping_grounding(
+            utterance,
+            before,
+            update,
+        )
+        warnings.extend(topping_warnings)
+
+        # ----------------------------------------------------
+        # 2-B. 기존 burger modify에서 명시적 topping 추가 누락 복구
+        # ----------------------------------------------------
+        update, modify_topping_warnings = (
+            repair_explicit_modify_topping_additions(
+                utterance,
+                before,
+                update,
+            )
+        )
+        warnings.extend(
+            modify_topping_warnings
+        )
+
+        # ----------------------------------------------------
+        # 2-B. 신규 burger의 명시적 modifier 복구
+        #
+        # 예:
+        #   새우버거 피클 빼서 단품 하나
+        #   불고기버거 베이컨 추가해서 하나
+        #
+        # LLM / semantic verifier가 값을 누락해도
+        # 사용자 발화에 명시된 값만 최종적으로 복구한다.
+        # ----------------------------------------------------
+        update, burger_modifier_warnings = (
+            repair_explicit_burger_add_modifiers(
+                utterance,
+                before,
+                pending_before,
+                update,
+            )
+        )
+
+        warnings.extend(
+            burger_modifier_warnings
+        )
+
+        # ----------------------------------------------------
         # 2-0. 기존 상태 reference grounding
         # ----------------------------------------------------
         update, reference_warnings = guard_nonexistent_exclusion_reference(
@@ -2459,9 +4917,35 @@ class DriveThruRuntime:
         # 4. quantity>1 세트의 서로 다른 옵션 분배
         #    예: x2 + "콜라랑 사이다"
         # ----------------------------------------------------
-        # 개별 상품에서는 옵션 대상을 LLM이 line_id별로 선택한다.
-        # 과거 그룹 보정은 일부 선택을 전체 선택으로 바꿀 수 있어 호출하지 않는다.
-        planned_group_ids = None
+        # 현재 pending이 있는 동일 quantity option group은
+        # closed-world 값만 deterministic하게 분배한다.
+        #
+        # 예:
+        #   불고기 세트 2개
+        #   -> "콜라랑 사이다요"
+        #   -> "미디엄이요"
+        #   -> "감자튀김이랑 치즈스틱이요"
+        #
+        # 값 개수와 대상 개수가 맞지 않으면 함수 내부에서
+        # 아무 보정도 하지 않는다.
+
+        (
+            group_update,
+            group_warnings,
+            planned_group_ids,
+        ) = build_pending_group_update(
+            utterance,
+            before,
+            pending_before,
+            self.manager,
+        )
+
+        warnings.extend(
+            group_warnings
+        )
+
+        if group_update is not None:
+            update = group_update
         # 5. 미완성 주문을 confirm으로 확정하지 못하게 막는다.
         # ----------------------------------------------------
         finalization_requested = is_finalization_utterance(utterance)
@@ -2502,7 +4986,11 @@ class DriveThruRuntime:
         self.manager.apply(update)
 
         if planned_group_ids:
-            self.manager.register_option_group(planned_group_ids)
+            self.manager.register_option_group([
+                self.manager.last_line_id_map[line_id]
+                for line_id in planned_group_ids
+                if line_id in self.manager.last_line_id_map
+            ])
 
         # ----------------------------------------------------
         # 7. "단품으로 하고 마무리할게요"처럼
