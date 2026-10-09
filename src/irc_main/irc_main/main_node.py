@@ -83,7 +83,7 @@ class DriveThruMain(Node):
         res.success = True
         self.pose_cli.call_async(SetBool.Request(data=False))
         if order['is_mcorder']:
-            self.say(f"맥오더 {order['order_no']}번 준비해 드릴게요.")
+            self.say(f"{order['menu']} 준비해 드릴게요.")
         return res
 
     def on_payment_done(self, req, res):
