@@ -3,15 +3,12 @@
 deliver_tts_node.py - 결제·전달 창구 안내 TTS (ROS 2 Humble / Python 3.10)
 
 main.py(drive_thru_main)가 'tts' 토픽으로 보내는 문장을 창구 스피커로 말한다.
-  main.say("결제 완료되었습니다. 상품 바로 전달해 드릴게요.")  ->  /tts (std_msgs/String 평문)
-
 언제·무엇을 말할지는 main 의 상태 기계가 정한다.
+
+  main.say("결제 완료되었습니다. 상품 바로 전달해 드릴게요.")  ->  /tts (std_msgs/String 평문)
   arm/done (TO_PAY)  -> "{menu} 총 {price}원입니다. 카드를 단말기에 대주세요."
   payment_done       -> "결제 완료되었습니다. 상품 바로 전달해 드릴게요."
   driver_detected(맥오더) -> "맥오더 {order_no}번 준비해 드릴게요."
-이 노드는 받은 문장을 그대로 읽기만 한다. 주문 JSON(/order)을 직접 보고 말하지 않는 이유:
-  주문은 order_list 에 쌓이고, LLM 은 주문이 끝나자마자 발행한다. 그 순간 창구에는
-  앞 차량이 있을 수 있다. 금액 안내 시점(팔이 단말기를 내민 뒤)은 main 만 안다.
 
 구현은 tts_node.TTSNode 를 그대로 쓰고 기본값만 바꾼다. 수신 출력([RX]), 퍼블리셔 감시([PUB]),
 숫자 읽기, 캐시, 상태 이벤트가 tts_node 와 같다.
@@ -27,10 +24,6 @@ main.py(drive_thru_main)가 'tts' 토픽으로 보내는 문장을 창구 스피
 
 테스트 (main 없이)
   ros2 topic pub --once /tts std_msgs/msg/String "{data: '빅맥 세트 총 7300원입니다. 카드를 단말기에 대주세요.'}"
-
-주문 접수 스피커와 창구 스피커가 같은 하나라면 이 노드를 띄우지 말고,
-main 실행 시 토픽만 돌려서 tts_node 가 순서대로 말하게 한다(두 목소리가 겹치지 않는다).
-  python3 main.py --ros-args -r tts:=/tts/text
 """
 from __future__ import annotations
 
