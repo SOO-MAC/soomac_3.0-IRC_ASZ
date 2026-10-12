@@ -49,14 +49,34 @@ class DriveThruMain(Node):
         self.create_service(Trigger, 'driver_detected', self.on_driver_detected)
         self.create_service(Trigger, 'payment_done', self.on_payment_done)
         self.create_service(Trigger, 'arm/done', self.on_arm_done)
-
+        self.create_service(Trigger, 'order/reset_test', self.on_reset_test)
         self.rearm_timer = self.create_timer(POSE_REARM_SEC, self.on_rearm)
         self.rearm_timer.cancel()
         self.get_logger().info('drive_thru_main ready')
 
+
     def on_car_entered(self, _):
         self.get_logger().info('차량 진입 → LLM 주문 시작')
         self.llm_cli.call_async(Trigger.Request())
+
+    def on_reset_test(self, request, response):
+
+        # 로봇 작업 중에는 초기화 금지
+        if self.state != State.WAIT_CAR:
+            response.success = False
+            response.message = "로봇 작업 중에는 초기화할 수 없습니다."
+            return response
+
+        count = len(self.order_list)
+
+        self.order_list.clear()
+
+        response.success = True
+        response.message = f"MAIN 주문 {count}개 초기화 완료"
+
+        self.get_logger().info(response.message)
+
+        return response
 
     def on_order(self, msg):
         try:
