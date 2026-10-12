@@ -2821,41 +2821,53 @@ def show_debug_handoff(handoff):
 # RESET ALL
 # ============================================================
 
-def reset_all(
-    runtime_worker,
-    handoff_manager,
-):
+def reset_all(runtime_worker, handoff_manager):
+    """개발용 전체 초기화: 주문 기록 보관 후 번호를 1부터 재시작."""
+    import fcntl
+    from datetime import datetime
 
-    runtime_worker.invalidate_and_reset(
-        wait=True
-    )
+    storage_dir = Path(handoff_manager.storage_dir)
+    outbox_dir = storage_dir / "ros_outbox"
+    lock_path = outbox_dir / ".reset.lock"
 
-    storage_dir = Path(
-        handoff_manager.storage_dir
-    )
+    # Publisher와 동기화하면서 Launch 실행 중 초기화 허용
+    with lock_path.open("a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
 
-    deleted = 0
+        runtime_worker.invalidate_and_reset(wait=True)
 
-    for pattern in (
-        "handoff_*.json",
-        "order_*.json",
-    ):
+        archive = (
+            storage_dir
+            / "reset_archive"
+            / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        )
 
-        for path in storage_dir.glob(
-            pattern
-        ):
+        sources = [
+            (storage_dir, "handoff_*.json"),
+            (storage_dir, "order_*.json"),
+            (outbox_dir / "pending", "order_*.json"),
+            (outbox_dir / "sent", "order_*.json"),
+        ]
 
-            try:
+        count = 0
 
-                path.unlink()
+        for directory, pattern in sources:
+            if not directory.exists():
+                continue
 
-                deleted += 1
+            for source in directory.glob(pattern):
+                target = archive / source.relative_to(storage_dir)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source.replace(target)
+                count += 1
 
-            except FileNotFoundError:
+        import uuid
+        (outbox_dir / ".reset_epoch").write_text(
+            uuid.uuid4().hex,
+            encoding="utf-8",
+        )
 
-                pass
-
-    return deleted
+        return count
 
 
 
@@ -13638,10 +13650,14 @@ def main():
 
             stt_session.stop()
 
-            deleted = reset_all(
-                runtime_worker,
-                handoff_manager,
-            )
+            try:
+                deleted = reset_all(
+                    runtime_worker,
+                    handoff_manager,
+                )
+            except RuntimeError as exc:
+                system_message(f"초기화 중단: {exc}")
+                continue
 
             session.vehicle_present = False
 
@@ -13659,7 +13675,7 @@ def main():
             )
 
             print(
-                f"삭제된 데이터 : "
+                f"보관된 주문 기록 : "
                 f"{deleted}개"
             )
 
