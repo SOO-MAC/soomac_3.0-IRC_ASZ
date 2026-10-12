@@ -50,6 +50,26 @@ class OrderResultPublisher(Node):
         )
 
     def publish_pending(self):
+        with (self.outbox.directory / ".reset.lock").open("a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+            try:
+                epoch_path = self.outbox.directory / ".reset_epoch"
+                epoch = (
+                    epoch_path.read_text(encoding="utf-8")
+                    if epoch_path.exists() else ""
+                )
+
+                if epoch != getattr(self, "_reset_epoch", ""):
+                    self._reset_epoch = epoch
+                    self._inflight = None
+                    self._waiting = False
+                    self._last_error = None
+
+                self._publish_pending_unlocked()
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    def _publish_pending_unlocked(self):
         try:
             if self._inflight is None:
                 path = self.outbox.next_pending()
