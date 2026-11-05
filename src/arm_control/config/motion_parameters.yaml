@@ -175,6 +175,7 @@ handled_bag_horizontal:
   HANDOFF_SEGMENTS: 24
   MAX_HANDOFF_RADIUS_MM: 400.0
 cup_geometry:
+  CUP_Y_OFFSET_MM: 60.0
   CUP_GRASP_Z_MM: 105.0
   CUP_LIFT_Z_MM: 185.0
   CUP_SAFE_Z_MM: 300.0

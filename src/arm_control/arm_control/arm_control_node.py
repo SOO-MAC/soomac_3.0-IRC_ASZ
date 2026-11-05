@@ -1768,6 +1768,7 @@ class CupKinematics:
     TCP_ERROR_MAX_MM = _motion_setting("cup_geometry", "TCP_ERROR_MAX_MM")
     REFERENCE_X_MM = _motion_setting("cup_geometry", "REFERENCE_X_MM")
     REFERENCE_Y_MM = _motion_setting("cup_geometry", "REFERENCE_Y_MM")
+    CUP_Y_OFFSET_MM = _motion_setting("cup_geometry", "CUP_Y_OFFSET_MM")
     REFERENCE = {
         name: np.array(ticks, dtype=np.int64)
         for name, ticks in _motion_setting("cup_geometry", "REFERENCE").items()
@@ -3186,8 +3187,12 @@ class ArmControlNode(Node):
         Complete path is calculated and validated
         before any motor request is sent.
         """
+        cup_target_y_mm = (
+            float(detected_y_mm) + CupKinematics.CUP_Y_OFFSET_MM
+        )
+
         plan = self.build_dynamic_cup_pick_plan(
-            float(detected_x_mm), float(detected_y_mm)
+            float(detected_x_mm), cup_target_y_mm
         )
         groups = [
             [plan["SAFE"]],
